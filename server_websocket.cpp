@@ -2,298 +2,288 @@
 // Created by 朱宏宽 on 2020/8/11.
 //
 
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
 #include <netinet/in.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <errno.h>
+#include <pthread.h>
 #include <arpa/inet.h>
+#include <event2/event.h>
 
-#include "../include/wrap.h"
-#include "../include/sha1.h"
+#include "../include/websocket_common.h"
 #include "../include/base64.h"
-#include "../include/intLib.h"
+#include "../include/sha1.h"
 
-#define REQUEST_LEN_MAX 4096
-#define DEFAULT_SERVER_PORT 8000
-#define WEB_SOCKET_KEY_LEN_MAX 256
-#define RESPONSE_HEADER_LEN_MAX 1024
-#define LINE_MAX 4096
+#define LINE_MAX 1024
+#define SHA_DIGEST_LENGTH 128
+#define GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-//char *fetchSecKey(const char *buf);
-int fetchSecKey(char *buf, char *ret);
-char *computeAcceptKey(char *buf);
-void shakeHand(int connfd, const char *s_Key);
-char *analyData(const char *buf, const int bufLen);
-char *packData(const char *message, unsigned long *len);
-void response(int connfd, const char *message);
+/*----------------------数据帧格式粘出来----------------------------
+0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-------+-+-------------+-------------------------------+
+|F|R|R|R| opcode|M| Payload len |    Extended payload length    |
+|I|S|S|S|  (4)  |A|     (7)     |             (16/64)           |
+|N|V|V|V|       |S|             |   (if payload len==126/127)   |
+| |1|2|3|       |K|             |                               |
++-+-+-+-+-------+-+-------------+ - - - - - - - - - - - - - - - +
+|     Extended payload length continued, if payload len == 127  |
++ - - - - - - - - - - - - - - - +-------------------------------+
+|                               |Masking-key, if MASK set to 1  |
++-------------------------------+-------------------------------+
+| Masking-key (continued)       |          Payload Data         |
++-------------------------------- - - - - - - - - - - - - - - - +
+:                     Payload Data continued ...                :
++ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - +
+|                     Payload Data continued ...                |
++---------------------------------------------------------------+
+-----------------------------------------------------------------*/
+typedef struct frame_header {
+    char fin;
+    char opcode;
+    char mask;
+    unsigned long long payload_length;
+    char masking_key[4];
+}frame_head;
 
-
-int main(int argc, char *argv[]) {
-    struct sockaddr_in s_addr, c_addr;
-    int listenfd, connfd;
-    char buf[REQUEST_LEN_MAX];
-    char *data;
-    char str[INET_ADDRSTRLEN];
-    char *secWebSocketKey;
-    int port = DEFAULT_SERVER_PORT;
-
-    if(argc > 1) {
-        port = atoi(argv[1]);
+int socket_bind_listen(int port, int listen_num) {
+    int listenfd;
+    if(-1 == (listenfd = socket(AF_INET, SOCK_STREAM, 0))) {
+        perror("socket error");
+        exit(1);
     }
-    if(port <= 0 || port >= 0xFFFF) {
-        printf("Port(%d) is out of range(1 - %d)", port, 0xFFFF);
-        exit(-1);
-    }
 
-    listenfd = Socket(AF_INET, SOCK_STREAM, 0);
-
-    memset(&s_addr, 0, sizeof(s_addr));
+    struct sockaddr_in s_addr;
+    socklen_t socklen = sizeof(struct sockaddr_in);
+    memset(&s_addr, 0, socklen);
     s_addr.sin_family = AF_INET;
     s_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     s_addr.sin_port = htons(port);
-
-    unsigned int on;
-    on = 0x1;
-    setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &on, 4);
-
-    Bind(listenfd, (sockaddr *)&s_addr, sizeof(s_addr));
-
-    Listen(listenfd, 20);
-
-    printf("Listen %d\nWaiting for connections ...\n", port);
-
-    socklen_t size = sizeof(c_addr);
-    connfd = Accept(listenfd, (struct sockaddr *)&c_addr, &size);
-    printf("Connection from %s at port %d\n",
-        inet_ntop(AF_INET, &c_addr.sin_addr, str, sizeof(str)),
-        ntohs(c_addr.sin_port));
-
-    int n;
-    int connected = 0;//0: not connected, 1: connected;
-    while(1) {
-        memset(buf, 0, REQUEST_LEN_MAX);
-        n = Read(connfd, buf, REQUEST_LEN_MAX);
-        printf("--------------------\n");
-
-        if(0 == connected) {
-            printf("read:%d\n%s\n", n, buf);
-            secWebSocketKey = computeAcceptKey(buf);
-            shakeHand(connfd, secWebSocketKey);
-            connected = 1;
-            continue;
-        }
-
-        data = analyData(buf, n);
-        response(connfd, data);
+    if(-1 == (bind(listenfd, (struct sockaddr *)&s_addr, socklen))) {
+        perror("bind error");
+        exit(1);
+    }
+    if(-1 == (listen(listenfd, listen_num))) {
+        perror("socket error");
+        exit(1);
     }
 
-    Close(connfd);
+    printf("监听 %d 端\n", port);
+    return listenfd;
+}
+
+int readLine(char *buf, int level, char *line) {
+    int len = strlen(buf);
+    for(;level < len; ++level) {
+        if(buf[level] == '\r' && buf[level + 1] == '\n')
+            return level + 2;
+        else
+            *line++ = buf[level];
+    }
+    return -1;
+}
+
+int shakeHand(int clntfd) {
+    int level = 0;                                  //每行的起始位置
+    char buf[LINE_MAX];                             //数据
+    char line[LINE_MAX];                            //每行数据
+    char *sec_accept;                            //Sec-WebSocket-Accept
+    char *sha1_data; //
+    char head[LINE_MAX] = {0};
+
+    if((recv(clntfd, buf, LINE_MAX, 0)) < 0) {
+        perror("recv error");
+    }
+    printf("request: \n");
+    printf("%s\n", buf);
+
+    do {
+        memset(line, 0, LINE_MAX);
+        level = readLine(buf, level, line);
+        printf("line: %s\n", line);
+
+        if(strstr(line, "Sec-WebSocket-Key: ") != NULL) {
+            strcat(line, GUID);
+
+            sha1_data = sha1_hash(line);
+
+            sec_accept = base64_encode((const char *)(sha1_data), strlen((const char *)sha1_data));
+
+            sprintf(head, "HTTP/1.1 101 Switching Protocols\r\n" \
+                          "Upgrade: websocket\r\n" \
+                          "Server: Microsoft-HTTPAPI/2.0\r\n" \
+                          "Connection: Upgrade\r\n" \
+                          "Sec-WebSocket-Accept: %s\r\n", sec_accept);
+
+            printf("response\n");
+            printf("%s", head);
+            if(send(clntfd, head, strlen(head), 0) < 0) {
+                perror("send error");
+            }
+            break;
+        }
+    } while (buf[level] != '\r' || buf[level + 1] != '\n');
 
     return 0;
 }
 
-//char *fetchSecKey(const char *buf) {
-//    char *key;
-//    char *keyBegin;
-//    char *flag = "Sec-WebSocket-Key: ";
-//    int i = 0, bufLen = 0;
-//
-//    key = (char *)malloc(WEB_SOCKET_KEY_LEN_MAX);
-//    memset(key, 0, WEB_SOCKET_KEY_LEN_MAX);
-//    if(!buf) {
-//        return NULL;
-//    }
-//
-//    keyBegin = strstr((char *)buf, flag);
-//    if(!keyBegin) {
-//        return NULL;
-//    }
-//    keyBegin += strlen(flag);
-//
-//    bufLen = strlen(buf);
-//    for (i = 0; i < bufLen; ++i) {
-//        if(keyBegin[i] == 0x0A || keyBegin[i] == 0x0D) {
-//            break;
-//        }
-//        key[i] = keyBegin[i];
-//    }
-//
-//    return key;
-//}
-
-int fetchSecKey(char *buf, char *ret) {
-    char *format = "Sec-WebSocket-Key: %[^\r]s";
-    char *p = strstr(buf, "Sec-WebSocket-Key");
-
-    if(p == NULL) {
-#ifdef DEBUG
-        printf("ERROR: get WebSocket_Key 1\n");
-#endif
-        return 0;
+void inverted_string(char *str,int len)
+{
+    int i; char temp;
+    for (i=0;i<len/2;++i)
+    {
+        temp = *(str+i);
+        *(str+i) = *(str+len-i-1);
+        *(str+len-i-1) = temp;
     }
-
-    if(sscanf(p, format, ret) != 1) {
-#ifdef DEBUG
-        printf("ERROR: get WebSocket_Key 2\n");
-#endif
-        return 0;
-    }
-
-    return 1;
 }
 
-char *computeAcceptKey(char *buf) {
-    char *c_Key;
-    char *s_Key;
-    char *sha1DataTemp;
-    char *sha1Data;
-    short temp;
-    int i, n;
-    const char *GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-    if(!buf) {
-        return NULL;
+int recv_frame_head(int fd,frame_head* head)
+{
+    char one_char;
+    /*read fin and op code*/
+    if (read(fd,&one_char,1)<=0)
+    {
+        perror("read fin");
+        return -1;
     }
-
-    c_Key = (char *)malloc(LINE_MAX);
-    memset(c_Key, 0, LINE_MAX);
-    //c_Key = fetchSecKey(buf);
-    int ret = fetchSecKey(buf, c_Key);
-    if(!c_Key) {
-        return NULL;
+    head->fin = (one_char & 0x80) == 0x80;
+    head->opcode = one_char & 0x0F;
+    if (read(fd,&one_char,1)<=0)
+    {
+        perror("read mask");
+        return -1;
     }
-    strncat(c_Key, GUID, strlen(GUID));
+    head->mask = (one_char & 0x80) == 0X80;
 
-    sha1DataTemp = sha1_hash(c_Key);
-    n = strlen(sha1DataTemp);
+    /*get payload length*/
+    head->payload_length = one_char & 0x7F;
 
-    sha1Data = (char *)malloc(n / 2 + 1);
-    memset(sha1Data, 0, n / 2 + 1);
-    for(i = 0; i < n; i += 2) {
-        sha1Data[i/2] = htoi(sha1DataTemp, i, 2);
-    }
-
-    s_Key = base64_encode(sha1Data, n / 2);
-
-    return s_Key;
-}
-
-void shakeHand(int connfd, const char *s_Key) {
-    char responseHeader[RESPONSE_HEADER_LEN_MAX];
-
-    if(!connfd) {
-        return ;
-    }
-
-    if(!s_Key) {
-        return ;
-    }
-
-    memset(responseHeader, '\0', RESPONSE_HEADER_LEN_MAX);
-
-    sprintf(responseHeader, "HTTP/1.1 101 Switching Protocols\r\n");
-    sprintf(responseHeader, "%sUpgrade: websocket\r\n", responseHeader);
-    sprintf(responseHeader, "%sConnection: Upgrade\r\n", responseHeader);
-    sprintf(responseHeader, "%sSec_WebSocket_Accept: %s\r\n\r\n", responseHeader,
-            printf("Response Header: %s\n", responseHeader));
-    Write(connfd, responseHeader, strlen(responseHeader));
-}
-
-char *analyData(const char *buf, const int bufLen) {
-    char *data;
-    char fin, maskFlag, masks[4];
-    char *payloadData;
-    char temp[8];
-    unsigned long n, payloadLen = 0;
-    unsigned short usLen = 0;
-    int i = 0;
-
-    if (bufLen < 2) {
-        return NULL;
-    }
-
-    fin = ((buf[0] & 0x80) == 0x80);
-    if (!fin) {
-        return NULL;
-    }
-
-    maskFlag = ((buf[1] & 0x80) == 0x80);
-    if(!maskFlag) {
-        return NULL;
-    }
-
-    payloadLen = buf[1] & 0x7F;
-    if(payloadLen == 126) {
-        memcpy(masks, buf + 4, 4);
-        payloadLen = (buf[2] & 0xFF) << 8 | (buf[3] & 0xFF);
-        payloadData = (char *)malloc(payloadLen);
-        memset(payloadData, 0, payloadLen);
-        memcpy(payloadData, buf+8, payloadLen);
-    } else if (payloadLen == 127) {
-        memcpy(masks, buf + 10, 4);
-        for (i = 0; i < 8; ++i) {
-            temp[i] = buf[9 - i];
+    if (head->payload_length == 126)
+    {
+        char extern_len[2];
+        if (read(fd,extern_len,2)<=0)
+        {
+            perror("read extern_len");
+            return -1;
         }
-
-        memcpy(&n, temp, 8);
-        payloadData = (char *)malloc(n);
-        memset(payloadData, 0, n);
-
-        memcpy(payloadData, buf + 14, n);
-        payloadLen = n;
-    } else {
-        memcpy(masks, buf + 2, 4);
-        payloadData = (char *)malloc(payloadLen);
-        memset(payloadData, 0, payloadLen);
-        memcpy(payloadData, buf + 6, payloadLen);
+        head->payload_length = (extern_len[0]&0xFF) << 8 | (extern_len[1]&0xFF);
+    }
+    else if (head->payload_length == 127)
+    {
+        char extern_len[8];
+        if (read(fd,extern_len,8)<=0)
+        {
+            perror("read extern_len");
+            return -1;
+        }
+        inverted_string(extern_len,8);
+        memcpy(&(head->payload_length),extern_len,8);
     }
 
-    for(i = 0; i < payloadLen; ++i) {
-        payloadData[i] = (char)(payloadData[i] ^ masks[i % 4]);
+    /*read masking-key*/
+    if (read(fd,head->masking_key,4)<=0)
+    {
+        perror("read masking-key");
+        return -1;
     }
 
-    printf("data(%d):%s\n", payloadLen, payloadData);
-    return payloadData;
+    return 0;
 }
 
-char *packData(const char *message, unsigned long *len) {
-    char *data = NULL;
-    unsigned long n;
-
-    n = strlen(message);
-    if(n < 126) {
-        data = (char *)malloc(n + 2);
-        memset(data, 0, n + 2);
-        data[0] = 0x81;
-        data[1] = n;
-        memcpy(data + 4, message, n);
-        *len = n + 4;
-    } else {
-        *len = 0;
-    }
-
-    return data;
-}
-
-void response(int connfd, const char *message) {
-    char *data;
-    unsigned long n = 0;
+void umask(char *data,int len,char *mask)
+{
     int i;
-    if(!connfd) {
-        return ;
+    for (i=0;i<len;++i)
+        *(data+i) ^= *(mask+(i%4));
+}
+
+int send_frame_head(int fd,frame_head* head)
+{
+    char *response_head;
+    int head_length = 0;
+    if(head->payload_length<126)
+    {
+        response_head = (char*)malloc(2);
+        response_head[0] = 0x81;
+        response_head[1] = head->payload_length;
+        head_length = 2;
+    }
+    else if (head->payload_length<0xFFFF)
+    {
+        response_head = (char*)malloc(4);
+        response_head[0] = 0x81;
+        response_head[1] = 126;
+        response_head[2] = (head->payload_length >> 8 & 0xFF);
+        response_head[3] = (head->payload_length & 0xFF);
+        head_length = 4;
+    }
+    else
+    {
+        response_head = (char*)malloc(12);
+        response_head[0] = 0x81;
+        response_head[1] = 127;
+        memcpy(response_head+2, (const void *)head->payload_length, sizeof(unsigned long long));
+        inverted_string(response_head+2,sizeof(unsigned long long));
+        head_length = 12;
     }
 
-    if(!data) {
-        return ;
-    }
-    data = packData(message, &n);
-
-    if(!data || n<= 0) {
-        printf("data is empty!\n");
-        return ;
+    if(write(fd,response_head,head_length)<=0)
+    {
+        perror("write head");
+        return -1;
     }
 
-    Write(connfd, data, n);
+    free(response_head);
+    return 0;
+}
+
+int main()
+{
+    int servfd = socket_bind_listen(4444,20);
+
+
+    struct sockaddr_in client_addr;
+    socklen_t addr_length = sizeof(client_addr);
+    int connfd = accept(servfd,(struct sockaddr*)&client_addr, &addr_length);
+
+    shakeHand(connfd);
+
+    while (1)
+    {
+        frame_head head;
+        int rul = recv_frame_head(connfd,&head);
+        if (rul < 0)
+            break;
+//        printf("fin=%d\nopcode=0x%X\nmask=%d\npayload_len=%llu\n",head.fin,head.opcode,head.mask,head.payload_length);
+
+        //echo head
+        send_frame_head(connfd,&head);
+        //read payload data
+        char payload_data[1024] = {0};
+        int size = 0;
+        do {
+            int rul;
+            rul = read(connfd,payload_data,1024);
+            if (rul<=0)
+                break;
+            size+=rul;
+
+            umask(payload_data,size,head.masking_key);
+            printf("recive:%s",payload_data);
+
+            //echo data
+            if (write(connfd,payload_data,rul)<=0)
+                break;
+        }while(size<head.payload_length);
+        printf("\n-----------\n");
+
+    }
+
+    close(connfd);
+    close(servfd);
 }
