@@ -26,6 +26,7 @@
 #include <pthread.h>
 
 #include "wrap.h"
+#include "sha1.h"
 
 int base64_encode( const char *indata, int in_len, char *outdata) {
     BIO *b64, *bio;
@@ -53,11 +54,11 @@ int base64_encode( const char *indata, int in_len, char *outdata) {
 }
 
 #define REPORT_LOGIN_CONNECT_TIMEOUT 1000
-#define REPORT_LOGIN_RESPOND_TIMEOUT (1000 + REPORT_LOGIN_CONNECT_TIMEOUT)
+//#define REPORT_LOGIN_RESPOND_TIMEOUT (1000 + REPORT_LOGIN_CONNECT_TIMEOUT)
 
-#define REPORT_ANALYSIS_ERR_RESEND_DELAY 500
+//#define REPORT_ANALYSIS_ERR_RESEND_DELAY 500
 
-#define WEBSOCKET_SHAKE_KEY_LEN 16
+//#define WEBSOCKET_SHAKE_KEY_LEN 16
 
 void websocket_getRandomString(unsigned char *buf, unsigned int len) {
     unsigned int i;
@@ -70,69 +71,90 @@ void websocket_getRandomString(unsigned char *buf, unsigned int len) {
     }
 }
 
-int websocket_getResponseShakeKey(unsigned char *acceptKey, unsigned char *responseKey, unsigned int acceptLen) {
-    char *clientKey;
-    char *sha1Data;
-    int n;
-    const char * GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    unsigned int GUIDLen;
+//unsigned char *websocket_getResponseShakeKey(unsigned char *acceptKey, unsigned int acceptLen) {
+//    char *clientKey;
+//    char *sha1Data;
+//    unsigned char *responseKey;
+//    int n;
+//    const char * GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+//    unsigned int GUIDLen;
+//
+//    if (acceptKey== NULL) {
+//        return 0;
+//    }
+//
+//    GUIDLen = sizeof(GUID);
+//    clientKey = (char *)malloc(sizeof(char) * (acceptLen + GUIDLen + 10));
+//    memset(clientKey, 0, (acceptLen + GUIDLen + 10));
+//    memcpy(clientKey, acceptKey, acceptLen);
+//    memcpy(&clientKey[acceptLen], GUID, GUIDLen);
+//    SHA1((unsigned char *)clientKey, strlen(clientKey), (unsigned char *)sha1Data);
+//    n = base64_encode(sha1Data, strlen(sha1Data), (char *)responseKey);
+//    free(sha1Data);
+//    free(clientKey);
+//
+//    return responseKey;
+//}
 
-    if (acceptKey== NULL) {
-        return 0;
-    }
+//int websocket_matchShakeKey(unsigned char* clientKey, unsigned int clientKeyLen, unsigned char *responseKey, unsigned int responseKeyLen) {
+//    int retLen;
+//    unsigned char tempKey[256] = {0};
+//
+//    retLen = websocket_getResponseShakeKey(clientKey, tempKey, clientKeyLen);
+//
+//    if(retLen != responseKeyLen) {
+//        printf("websocket_matchShakeKey: len err\r\n%s\r\n%s\r\n%s\r\n", clientKey, tempKey, responseKey);
+//        return -1;
+//    } else if(strcmp((const char *)tempKey, (const char *)responseKey) != 0) {
+//        printf("websocket_matchShakeKey: str err\r\n%s\r\n%s\r\n", tempKey, responseKey);
+//        return -1;
+//    }
+//
+//    return 0;
+//}
 
-    GUIDLen = sizeof(GUID);
-    clientKey = (char *)malloc(sizeof(char) * (acceptLen + GUIDLen + 10));
-    memset(clientKey, 0, (acceptLen + GUIDLen + 10));
-    memcpy(clientKey, acceptKey, acceptLen);
-    memcpy(&clientKey[acceptLen], GUID, GUIDLen);
-    SHA1((unsigned char *)clientKey, strlen(clientKey), (unsigned char *)sha1Data);
-    n = base64_encode(sha1Data, strlen(sha1Data), (char *)responseKey);
-    free(sha1Data);
-    free(clientKey);
+//void websocket_buildHttpHead(char *ip, int port, char *interfacePath, unsigned char *shakeKey, char *package) {
+//    const char httpDemo[] = "GET %s HTTP/1.1\r\n"
+//                            "Connection: Upgrade\r\n"
+//                            "Host: %s:%d\r\n"
+//                            "Sec-WebSocket-Key: %s\r\n"
+//                            "Sec-WebSocket-Version: 13\r\n"
+//                            "Upgrade: websocket\r\n\r\n";
+//
+//    sprintf(package, httpDemo, interfacePath, ip, port, shakeKey);
+//}
 
-    return n;
-}
-
-int websocket_matchShakeKey(unsigned char* clientKey, unsigned int clientKeyLen, unsigned char *responseKey, unsigned int responseKeyLen) {
-    int retLen;
-    unsigned char tempKey[256] = {0};
-
-    retLen = websocket_getResponseShakeKey(clientKey, tempKey, clientKeyLen);
-
-    if(retLen != responseKeyLen) {
-        printf("websocket_matchShakeKey: len err\r\n%s\r\n%s\r\n%s\r\n", clientKey, tempKey, responseKey);
-        return -1;
-    } else if(strcmp((const char *)tempKey, (const char *)responseKey) != 0) {
-        printf("websocket_matchShakeKey: str err\r\n%s\r\n%s\r\n", tempKey, responseKey);
-        return -1;
-    }
-
-    return 0;
-}
-
-void websocket_buildHttpHead(char *ip, int port, char *interfacePath, unsigned char *shakeKey, char *package) {
-    const char httpDemo[] = "GET %s HTTP/1.1\r\n"
-                            "Connection: Upgrade\r\n"
-                            "Host: %s:%d\r\n"
-                            "Sec-WebSocket-Key: %s\r\n"
-                            "Sec-WebSocket-Version: 13\r\n"
-                            "Upgrade: websocket\r\n\r\n";
-
-    sprintf(package, httpDemo, interfacePath, ip, port, shakeKey);
-}
-
-void websocket_buildHttpResponse(unsigned char *acceptKey, unsigned int acceptKeyLen, char *package) {
-    const char httpDemo[] = "HTTP/1.1 101 Switching Protocols\r\n"
-                            "Upgrade: websocket\r\n"
-                            "Server: Microsoft-HTTPAPI/2.0\r\n"
-                            "Connection: Upgrade\r\n"
-                            "Sec-WebSocket-Accept: %s\r\n";
-    unsigned char responseShakeKey[256] = {0};
-    websocket_getResponseShakeKey(acceptKey, responseShakeKey, acceptKeyLen);
-    sprintf(package, httpDemo, responseShakeKey);
-    printf("%s", package);
-}
+//char *websocket_buildHttpResponse(unsigned char *acceptKey, unsigned int acceptKeyLen) {
+//    const char httpDemo[] = "HTTP/1.1 101 Switching Protocols\r\n"
+//                            "Upgrade: websocket\r\n"
+//                            "Server: Microsoft-HTTPAPI/2.0\r\n"
+//                            "Connection: Upgrade\r\n"
+//                            "Sec-WebSocket-Accept: %s\r\n";
+//    char *package;
+//    unsigned char *responseShakeKey;
+//    responseShakeKey = websocket_getResponseShakeKey(acceptKey, acceptKeyLen);
+//
+//    char *clientKey;
+//    char *sha1Data;
+//    unsigned char *responseKey;
+//    int n;
+//    const char * GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+//    unsigned int GUIDLen;
+//    if (acceptKey== NULL) {
+//        return 0;
+//    }
+//    GUIDLen = sizeof(GUID);
+//    clientKey = (char *)malloc(sizeof(char) * (acceptLen + GUIDLen + 10));
+//    memset(clientKey, 0, (acceptLen + GUIDLen + 10));
+//    memcpy(clientKey, acceptKey, acceptLen);
+//    memcpy(&clientKey[acceptLen], GUID, GUIDLen);
+//    SHA1((unsigned char *)clientKey, strlen(clientKey), (unsigned char *)sha1Data);
+//    n = base64_encode(sha1Data, strlen(sha1Data), (char *)responseKey);
+//    printf("%s", responseShakeKey);
+//    sprintf(package, httpDemo, responseShakeKey);
+//    printf("%s", package);
+//    return package;
+//}
 
 #define MASK_LEN 4
 
@@ -449,42 +471,66 @@ int readline(char* allbuf,int level,char* linebuf)
 //    return -timeout;
 //}
 
-int websocket_serverLinkToClient(int clntfd, char *recvBuf, unsigned int bufLen) {
-    char *p;
-    int ret;
-    char recvShakeKey[512], responsePackage[1024];
+int readLine(char *buf, int level, char *line) {
+    int len = strlen(buf);
+    for(;level < len; ++level) {
+        if(buf[level] == '\r' && buf[level + 1] == '\n')
+            return level + 2;
+        else
+            *line++ = buf[level];
+    }
+    return -1;
+}
 
-    memset(recvShakeKey, 0, sizeof(recvShakeKey));
-    memset(responsePackage, 0, sizeof(responsePackage));
-    p = (char *)malloc(sizeof(char) * 256);
-    if(NULL == (p = strstr(recvBuf, "Sec-WebSocket-Key: "))) {
-        return -1;
-    }
-    p += strlen("Sec-WebSocket-Key: ");
-    printf("p = %s", p);
-    p[24] = '\r';
-    p[25] = '\n';
-    p[26] = '\0';
-    printf("p = %s", p);
-    ret = strlen(p);
-    if(ret < 1) {
-         return -1;
-    }
-    websocket_buildHttpResponse((unsigned char *)p, ret, responsePackage);
+int websocket_serverLinkToClient(int clntfd, char *recvBuf, unsigned int bufLen) {
+    int level = 0, ret = 0;
+    char responsePackage[1024], sha1Data[SHA_DIGEST_LENGTH];
+    char line[1024];
+    unsigned char *responseKey;
+    const char * GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+//    memset(responsePackage, 0, sizeof(responsePackage));
+    responseKey = (unsigned char *)malloc(sizeof(char) * 1024);
+    do {
+        memset(line, 0, 1024);
+        level = readLine(recvBuf, level, line);
+        printf("line: %s\n", line);
+
+        if(strstr(line, "Sec-WebSocket-Key: ") != NULL) {
+            strcat(line, GUID);
+
+            SHA1((unsigned char *)line, strlen(line), (unsigned char *)sha1Data);
+            //sha1Data = sha1_hash(line);
+            base64_encode(sha1Data, strlen(sha1Data), (char *)responseKey);
+
+            sprintf(responsePackage, "HTTP/1.1 101 Switching Protocols\r\n"
+                    //"Server: Microsoft-HTTPAPI/2.0\r\n" 
+                    "Connection: Upgrade\r\n" 
+                    "Sec-WebSocket-Accept: %s\r\n"
+                    "Upgrade: websocket\r\n", responseKey);
+            printf("response\n");
+            printf("%s", responsePackage);
+            ret = write(clntfd, responsePackage, strlen(responsePackage));
+            if(ret < 0) {
+                perror("send error");
+            }
+
+            break;
+        }
+    } while (recvBuf[level] != '\r' || recvBuf[level + 1] != '\n');
     printf("%s\n", responsePackage);
-    free(p);
-    return send(clntfd, responsePackage, strlen(responsePackage), MSG_NOSIGNAL);
+
+    free(responseKey);
+    return ret;
 }
 
 int websocket_send(int fd, unsigned char *data, unsigned int dataLen, bool mod, WebSocket_CommunicationType type) {
     unsigned char *websocketPackage;
     unsigned int retLen, ret;
-
     websocketPackage = (unsigned char *)(malloc(sizeof(char) * (dataLen + 128)));
     memset(websocketPackage, 0, strlen((const char *)websocketPackage));
     retLen = websocket_enPackage(data, dataLen, websocketPackage, (dataLen + 128), mod, type);
-
-    ret = send(fd, websocketPackage, retLen, MSG_NOSIGNAL);
+    ret = send(fd, websocketPackage, strlen((const char *)websocketPackage), MSG_NOSIGNAL);
     free(websocketPackage);
     return ret;
 }
