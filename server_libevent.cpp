@@ -93,7 +93,7 @@ int main() {
     Listen(listenfd, 20);
 
     ev = evsignal_new(base, SIGINT, signal_cb, base);
-    if(event_add(ev, NULL) == -1) {
+    if(evsignal_add(ev, NULL) == -1) {
         perror("event_add error");
         exit(-1);
     }
