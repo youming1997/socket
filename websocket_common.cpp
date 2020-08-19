@@ -235,7 +235,7 @@ int websocket_enPackage(unsigned char *data, unsigned int dataLen, unsigned char
         for(i = 0; i < dataLen; ++i) {
             temp1 = maskKey[i % sizeof(maskKey)];
             temp2 = data[i];
-            *package++ = (char)(temp1 ^ temp2);
+            *package++ = (char)(((~temp1)&temp2) | (temp1&(~temp2)));
         }
         len += dataLen;
     } else {
@@ -364,7 +364,7 @@ int websocket_dePackage(unsigned char *data, unsigned int dataLen, unsigned char
         for(i = 0; i < len; ++i) {
             temp1 = maskKey[i % MASK_LEN];
             temp2 = data[i + dataStart];
-            *package++ = (char)(temp1 ^ temp2);
+            *package++ = (char)(((~temp1)&temp2) | (temp1&(~temp2)));
         }
         *package = '\0';
     } else {
