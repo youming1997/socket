@@ -24,14 +24,28 @@ void read_cb(evutil_socket_t clntfd, short event, void *arg);
 void write_cb(evutil_socket_t sockfd, short event, void *arg);
 void accept_cb(evutil_socket_t servfd, short event, void *arg);
 
+typedef enum {
+    CS_CONNECTED,                   //已建立TCP连接
+    CS_FAILED,                      //连接失败
+    CS_WEBSOCKET_CONNECTED,         //已建立websocket连接
+    CS_WEBSOCKET_FAILED,            //websocket连接失败
+    CS_HANDLING,                    //数据包处理中
+    CS_DISCONNECTED,                //断开连接
+    CS_TIMEOUT                      //超时
+}CLIENT_STATE;
+
 struct client_rw{
     struct event *read_event;
     struct event *write_event;
-    char recvbuf[SAVE_MAX];
-    char sendbuf[SAVE_MAX];
+    //char recvbuf[SAVE_MAX];
+    //char sendbuf[SAVE_MAX];
+    char buffer[SAVE_MAX];
     size_t buf_used;
-    size_t recv_num;
-    size_t send_num;
+    unsigned int recv_num;
+    unsigned int recvPackage_num;
+    unsigned int sendPackage_num;
+    int timeout;
+    CLIENT_STATE state;
 };
 
 struct client_rw *client_rw_init(struct event_base *base, int connfd) {
@@ -39,11 +53,14 @@ struct client_rw *client_rw_init(struct event_base *base, int connfd) {
     if(clientRw == NULL) {
         return NULL;
     }
-    memset(clientRw->recvbuf, '\0', SAVE_MAX);
-    memset(clientRw->sendbuf, '\0', SAVE_MAX);
+    //memset(clientRw->recvbuf, '\0', SAVE_MAX);
+    //memset(clientRw->sendbuf, '\0', SAVE_MAX);
+    memset(clientRw->buffer, 0, SAVE_MAX);
     clientRw->recv_num = 0;
-    clientRw->send_num = 0;
+    clientRw->recvPackage_num = 0;
+    clientRw->sendPackage_num = 0;
     clientRw->buf_used = 0;
+    clientRw->timeout = 0;
     clientRw->read_event = event_new(base, connfd, EV_READ | EV_PERSIST, read_cb, clientRw);
     if(clientRw->read_event == NULL) {
         perror("create read_event failed");
@@ -71,56 +88,103 @@ void client_rw_free(struct client_rw *clientRw) {
 
 void read_cb(evutil_socket_t clntfd, short event, void *arg) {
     struct client_rw *clientRw = (struct client_rw *)arg;
-    char recvPackage[SAVE_MAX];
+    char recvPackage[LINE_MAX];
 
-    while(1) {
-        memset(recvPackage, 0, SAVE_MAX);
-        int ret = recv(clntfd, recvPackage, SAVE_MAX, MSG_NOSIGNAL);
-        if(ret == -1) {
-            perror("recv error");
-            client_rw_free(clientRw);
-            break;
-        } else if(ret == 0) {
-            printf("client has been shutdown.\n");
-            client_rw_free(clientRw);
-            close(clntfd);
-            break;
-        }
-        printf("recv OK, ret = %d\n", ret);
-        if(strstr(recvPackage, "GET") != NULL) {
-            websocket_serverLinkToClient(clntfd, recvPackage, ret);
-        } else {
-            ret = websocket_dePackage((unsigned char *)recvPackage, strlen(recvPackage), (unsigned char *)clientRw->recvbuf, SAVE_MAX, (unsigned int *)&clientRw->recv_num);
-            printf("ret = %d\n", ret);
-            printf("Client said: %s\n", clientRw->recvbuf);
-            char sendPackage[SAVE_MAX];
-            memset(sendPackage, 0, SAVE_MAX);
-            int len = websocket_enPackage((unsigned char *)clientRw->recvbuf, clientRw->recv_num, (unsigned char *)sendPackage, SAVE_MAX, false, (WebSocket_CommunicationType)ret);
-            int ret = send(clntfd, sendPackage, len, MSG_NOSIGNAL);
-            if(-1 == ret) {
-                perror("send error");
-                client_rw_free(clientRw);
-            }
-        }    
+    memset(recvPackage, 0, SAVE_MAX);
+    int i, j, ret;
+    WebSocket_CommunicationType type;
+    int dataStart;
+    char *head;
+    ret = recv(clntfd, clientRw->buffer, SAVE_MAX, MSG_NOSIGNAL);
+    if(ret == -1) {
+        perror("recv error");
+        client_rw_free(clientRw);
+//        break;
+    }
+    printf("recv OK, ret = %d\n", ret);
+    clientRw->buf_used += ret;
+    clientRw->recv_num = ret;
+    if(event_add(clientRw->write_event, NULL) < 0) {
+        perror("write_event error");
+        client_rw_free(clientRw);
+        close(clntfd);
     }
 }
 
-void write_cb(evutil_socket_t sockfd, short event, void *arg) {
+void state_check(client_rw clientRw) {
+
+}
+
+void write_cb(evutil_socket_t clntfd, short event, void *arg) {
     //printf("write_cb 调用\n");
     struct client_rw *clientRw = (struct client_rw *)arg;
-    unsigned char sendPackage[SAVE_MAX];
-    
+    WebSocket_CommunicationType type;
+    unsigned char *recvPackage, *sendPackage, *message;
+    unsigned char maskKey[4];
+    int headStart, headEnd, i, j;
+    int dataStart, dataLen, payLoadLen;
+    int isMask;
+
     printf("write_cb 调用\n");
-    while(strlen(clientRw->recvbuf) != 0) {
-        strncpy(clientRw->sendbuf, clientRw->recvbuf, clientRw->recv_num);
-        clientRw->send_num = clientRw->recv_num;
-        int len = websocket_enPackage((unsigned char *)clientRw->sendbuf, clientRw->send_num, sendPackage, SAVE_MAX, false, WCT_TXTDATA);
-        int ret = send(sockfd, sendPackage, len, MSG_NOSIGNAL);
-        if(-1 == ret) {
-            perror("send error");
-            client_rw_free(clientRw);
+    if(clientRw->buf_used != 0) {
+        for(i = 0; i < clientRw->buf_used && clientRw->state == CS_CONNECTED; ++i) {
+            if(clientRw->buffer[i] == 'G' && clientRw->buffer[i + 1] == 'E' && clientRw->buffer[i + 2] == 'T') {
+                headStart = i;
+                continue;
+            }
+            if(clientRw->buffer[i] == '\r' && clientRw->buffer[i + 1] == '\n' && clientRw->buffer[i + 2] == '\r' && clientRw->buffer[i + 3] == '\n') {
+                headEnd = i + 3;
+                websocket_serverLinkToClient(clntfd, (clientRw->buffer + headStart), (headEnd - headStart + 1));
+                headEnd++;
+                for(; clientRw->buffer + headEnd != NULL; ++headStart, ++headEnd) {
+                    clientRw->buffer[headStart] = clientRw->buffer[headEnd];
+                }
+                memset(clientRw->buffer + headStart, 0, headEnd - headStart);
+                clientRw->state = CS_WEBSOCKET_CONNECTED;
+                return;
+            }
+        }
+
+        if(clientRw->state == CS_WEBSOCKET_CONNECTED) {
+            type = websocket_isType((unsigned char *)clientRw->buffer, 1);
+            if(type == WCT_BINDATA || type == WCT_TXTDATA || type == WCT_PING) {
+                clientRw->state = CS_HANDLING;
+                isMask = websocket_isMask((unsigned char *)clientRw->buffer, 2);
+                if(isMask) {
+                    clientRw->recvPackage_num += 4;
+                }
+                dataLen = websocket_isDataLen((unsigned char *)clientRw->buffer, 10, isMask, maskKey, &dataStart, &payLoadLen);
+                if(payLoadLen == 126) {
+                    clientRw->recvPackage_num = dataLen + 4;
+                } else if(payLoadLen == 127) {
+                    clientRw->recvPackage_num = dataLen + 10;
+                } else {
+                    clientRw->recvPackage_num = dataLen + 2;
+                }
+            } else if(type == WCT_DISCONN) {
+                printf("client has been shutdown.\n");
+                client_rw_free(clientRw);
+                close(clntfd);
+            }
+            clientRw->timeout = 0;
+        }
+
+        if(clientRw->state == CS_HANDLING && clientRw->recvPackage_num <= clientRw->buf_used) {
+            recvPackage = (unsigned char *)malloc(sizeof(char) * clientRw->recvPackage_num);
+            memcpy(recvPackage, clientRw->buffer, clientRw->recvPackage_num);
+            websocket_dePackage(recvPackage, clientRw->recvPackage_num, message, SAVE_MAX, &clientRw->recv_num);
+            printf("Client said: %s\n", message);
+
+            free(message);
+            free(sendPackage);
+            clientRw->timeout = 0;
         }
     }
+    if(clientRw->timeout == 60000) {
+        clientRw->state = CS_TIMEOUT;
+    }
+    delayms(1);
+    clientRw->timeout++;
 }
 
 void accept_cb(evutil_socket_t servfd, short event, void *arg) {
@@ -132,18 +196,18 @@ void accept_cb(evutil_socket_t servfd, short event, void *arg) {
     if(-1 == connfd) {
         perror("accept error");
     }
+    printf("accept OK\n");
+
+    evutil_make_socket_nonblocking(connfd);
 
     struct client_rw *clientRw = client_rw_init(base, connfd);
     if(clientRw == NULL) {
         printf("create client failed.\n");
     } else {
-
         if(event_add(clientRw->read_event, NULL) < 0) {
             perror("read_event error");
         }
-        if(event_add(clientRw->write_event, NULL) < 0) {
-            perror("write_event error");
-        }
+        clientRw->state = CS_CONNECTED;
     }
 }
 
@@ -177,7 +241,7 @@ int main() {
         exit(1);
     }
     printf("bind OK\n");
-    
+
     ret = listen(listenfd, 10);
     if(-1 == ret) {
         perror("listen error");
