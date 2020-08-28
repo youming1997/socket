@@ -40,7 +40,7 @@ struct client_rw{
     //char recvbuf[SAVE_MAX];
     //char sendbuf[SAVE_MAX];
     char buffer[SAVE_MAX];
-    size_t buf_used;
+    unsigned int buf_used;
     unsigned int recv_num;
     unsigned int recvPackage_num;
     unsigned int sendPackage_num;
@@ -87,23 +87,24 @@ void client_rw_free(struct client_rw *clientRw) {
 }
 
 void read_cb(evutil_socket_t clntfd, short event, void *arg) {
+    //printf("read_cb OK\n");
     struct client_rw *clientRw = (struct client_rw *)arg;
-    char recvPackage[LINE_MAX];
+    //char recvPackage[LINE_MAX];
 
-    memset(recvPackage, 0, SAVE_MAX);
-    int i, j, ret;
-    WebSocket_CommunicationType type;
-    int dataStart;
-    char *head;
-    ret = recv(clntfd, clientRw->buffer, SAVE_MAX, MSG_NOSIGNAL);
+    //memset(recvPackage, 0, SAVE_MAX);
+    int /*i, j,*/ ret;
+    ret = recv(clntfd, clientRw->buffer, SAVE_MAX, 0);
     if(ret == -1) {
         perror("recv error");
         client_rw_free(clientRw);
 //        break;
     }
+    if(ret == 0) {
+        return ;
+    }
     printf("recv OK, ret = %d\n", ret);
     clientRw->buf_used += ret;
-    clientRw->recv_num = ret;
+//    clientRw->recv_num = ret;
     if(event_add(clientRw->write_event, NULL) < 0) {
         perror("write_event error");
         client_rw_free(clientRw);
@@ -111,41 +112,52 @@ void read_cb(evutil_socket_t clntfd, short event, void *arg) {
     }
 }
 
-void state_check(client_rw clientRw) {
+//void state_check(client_rw clientRw) {
 
-}
+//}
 
-void write_cb(evutil_socket_t clntfd, short event, void *arg) {
-    //printf("write_cb 调用\n");
+void write_cb(evutil_socket_t sockfd, short event, void *arg) {
+//    printf("write_cb 调用\n");
     struct client_rw *clientRw = (struct client_rw *)arg;
     WebSocket_CommunicationType type;
-    unsigned char *recvPackage, *sendPackage, *message;
+    unsigned char recvPackage[SAVE_MAX],/* *sendPackage,*/ message[LINE_MAX];
     unsigned char maskKey[4];
-    int headStart, headEnd, i, j;
+    unsigned int headStart, headEnd, i;
     int dataStart, dataLen, payLoadLen;
     int isMask;
 
-    printf("write_cb 调用\n");
+    //printf("write_cb 调用\n");
     if(clientRw->buf_used != 0) {
+//        printf("write_cb 调用\n");
         for(i = 0; i < clientRw->buf_used && clientRw->state == CS_CONNECTED; ++i) {
             if(clientRw->buffer[i] == 'G' && clientRw->buffer[i + 1] == 'E' && clientRw->buffer[i + 2] == 'T') {
                 headStart = i;
+                printf("GET 获取\n");
                 continue;
             }
             if(clientRw->buffer[i] == '\r' && clientRw->buffer[i + 1] == '\n' && clientRw->buffer[i + 2] == '\r' && clientRw->buffer[i + 3] == '\n') {
                 headEnd = i + 3;
-                websocket_serverLinkToClient(clntfd, (clientRw->buffer + headStart), (headEnd - headStart + 1));
-                headEnd++;
+                printf("尾获取\n");
+                websocket_serverLinkToClient(sockfd, (clientRw->buffer + headStart), (headEnd - headStart + 1));
+                printf("连接成功\n");
+                /*headEnd++;
                 for(; clientRw->buffer + headEnd != NULL; ++headStart, ++headEnd) {
                     clientRw->buffer[headStart] = clientRw->buffer[headEnd];
+                    clientRw->buffer[headEnd] = '\0';
                 }
-                memset(clientRw->buffer + headStart, 0, headEnd - headStart);
+                //memset(clientRw->buffer + headStart, 0, headEnd - headStart);
                 clientRw->state = CS_WEBSOCKET_CONNECTED;
                 return;
+                */
+                memset(clientRw->buffer, 0, SAVE_MAX);
+                clientRw->buf_used = 0;
+                clientRw->state = CS_WEBSOCKET_CONNECTED;
+                return ;
             }
         }
 
         if(clientRw->state == CS_WEBSOCKET_CONNECTED) {
+            printf("websocket 接收消息中\n");
             type = websocket_isType((unsigned char *)clientRw->buffer, 1);
             if(type == WCT_BINDATA || type == WCT_TXTDATA || type == WCT_PING) {
                 clientRw->state = CS_HANDLING;
@@ -153,38 +165,51 @@ void write_cb(evutil_socket_t clntfd, short event, void *arg) {
                 if(isMask) {
                     clientRw->recvPackage_num += 4;
                 }
-                dataLen = websocket_isDataLen((unsigned char *)clientRw->buffer, 10, isMask, maskKey, &dataStart, &payLoadLen);
+                printf("isMask 后 clientRw->recvPackage_num = %d\n", clientRw->recvPackage_num);
+                dataLen = websocket_isDataLen((unsigned char *)clientRw->buffer, clientRw->buf_used, isMask, maskKey, &dataStart, &payLoadLen);
+                clientRw->recvPackage_num += dataLen;
+                printf("加 dataLen 后 clientRw->recvPackage_num = %d\n", clientRw->recvPackage_num);
                 if(payLoadLen == 126) {
-                    clientRw->recvPackage_num = dataLen + 4;
+                    clientRw->recvPackage_num += 4;
                 } else if(payLoadLen == 127) {
-                    clientRw->recvPackage_num = dataLen + 10;
+                    clientRw->recvPackage_num += 10;
                 } else {
-                    clientRw->recvPackage_num = dataLen + 2;
+                    clientRw->recvPackage_num += 2;
                 }
+                printf("加数据长度的数字后 clientRw->recvPackage_num = %d\n", clientRw->recvPackage_num);
             } else if(type == WCT_DISCONN) {
                 printf("client has been shutdown.\n");
                 client_rw_free(clientRw);
-                close(clntfd);
+                close(sockfd);
             }
             clientRw->timeout = 0;
+            printf("接收消息成功\n");
         }
 
         if(clientRw->state == CS_HANDLING && clientRw->recvPackage_num <= clientRw->buf_used) {
-            recvPackage = (unsigned char *)malloc(sizeof(char) * clientRw->recvPackage_num);
+            printf("处理消息中\n");
+            printf("clientRw->recvPackage_num = %d\n", clientRw->recvPackage_num);
+//            recvPackage = (unsigned char *)malloc(sizeof(char) * (clientRw->recvPackage_num + 1));
+//            message = (unsigned char *)malloc(sizeof(char) * clientRw->recvPackage_num);
+            memset(recvPackage, 0, SAVE_MAX);
             memcpy(recvPackage, clientRw->buffer, clientRw->recvPackage_num);
+            memset(message, 0, LINE_MAX);
+            
+            printf("recvPackage 和 message 建立成功\n");
+            
             websocket_dePackage(recvPackage, clientRw->recvPackage_num, message, SAVE_MAX, &clientRw->recv_num);
+//            message[clientRw->recv_num] = '\0';
+            printf("解包成功\n");
             printf("Client said: %s\n", message);
-
-            free(message);
-            free(sendPackage);
-            clientRw->timeout = 0;
+            
+//            free(message);
+//            free(recvPackage);
+            clientRw->buf_used -= clientRw->recvPackage_num;
+            clientRw->recvPackage_num = 0;
+            clientRw->state = CS_WEBSOCKET_CONNECTED;
+            printf("处理消息成功\n");
         }
     }
-    if(clientRw->timeout == 60000) {
-        clientRw->state = CS_TIMEOUT;
-    }
-    delayms(1);
-    clientRw->timeout++;
 }
 
 void accept_cb(evutil_socket_t servfd, short event, void *arg) {
@@ -203,11 +228,16 @@ void accept_cb(evutil_socket_t servfd, short event, void *arg) {
     struct client_rw *clientRw = client_rw_init(base, connfd);
     if(clientRw == NULL) {
         printf("create client failed.\n");
+        close(connfd);
     } else {
         if(event_add(clientRw->read_event, NULL) < 0) {
             perror("read_event error");
+            client_rw_free(clientRw);
+            close(connfd);
+            return ;
         }
         clientRw->state = CS_CONNECTED;
+        printf("struct client_rw OK\n");
     }
 }
 
