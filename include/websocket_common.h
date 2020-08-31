@@ -1,4 +1,5 @@
-#pragma once
+#ifndef NEW_WEBSOCKET_SERVER_WEBSOCKET_COMMON_H
+#define NEW_WEBSOCKET_SERVER_WEBSOCKET_COMMON_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +7,7 @@
 #include <stdbool.h>
 #include <time.h>
 #include <string.h>
+#include <limits.h>
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -24,6 +26,9 @@
 
 #define SAVE_MAX 16 * 1024
 #define MASK_LEN 4
+#define DP_SHORT "Not long enough.\n"
+#define DP_PONG "This is a pong package.\n"
+#define DP_ERR "Wrong type.\n"
 
 typedef enum {
     WCT_MINDATA = -20,      // 0x0：标识一个中间数据包
@@ -36,18 +41,18 @@ typedef enum {
     WCT_NULL = 0
 }WebSocket_CommunicationType;
 
-typedef enum client_state {
+enum client_state {
     CS_TCP_CONNECTED,                   //TCP连接成功
     //CS_TCP_FAILED,                      //TCP连接失败
     CS_WEBSOCKET_CONNECTED,             //websocket连接成功
     //CS_WEBSOCKET_FAILED,                //websocket连接失败
-    CS_SENDING,                         //发送消息中
-    CS_HANDLING,                        //数据包处理中
-    CS_OVERTIME,                        //超时
+    //CS_SENDING,                         //发送消息中
+    //CS_HANDLING,                        //数据包处理中
+    //CS_OVERTIME,                        //超时
     CS_CLOSED,                          //已关闭
 };
 
-typedef struct client_rw {
+struct client_rw {
     int clntfd;                         //客户端句柄
     struct sockaddr_in clnt_addr;       //客户端相关信息
     struct event *read_event;           //从客户端读数据的方法
@@ -63,11 +68,13 @@ typedef struct client_rw {
 };
 
 int websocket_enPackage(unsigned char *data, unsigned int dataLen, unsigned char *package, unsigned int packageMaxLen, bool isMask, WebSocket_CommunicationType type);
-WebSocket_CommunicationType websocket_isType(unsigned char *data, unsigned int dataLen);
-int websocket_isMask(unsigned char *data, unsigned int dataLen);
-int websocket_getDataLen(unsigned char *data, unsigned int dataLen, int isMask, unsigned char *maskKey, int *dataStart, int *payLoadLen);
-int websocket_dePackage(unsigned char *data, unsigned int dataLen, unsigned char *package, unsigned int packageMaxLen, unsigned int *packageLen);
+WebSocket_CommunicationType websocket_getType(unsigned char *package, unsigned int packageLen);
+int websocket_isMask(unsigned char *package, unsigned int dataLen);
+int websocket_getDataLen(unsigned char *package, unsigned int packageLen, int isMask, unsigned char *maskKey, int *dataStart, int *payLoadLen);
+char *websocket_dePackage(unsigned char *package, unsigned int packageLen, int isMask, char *maskKey, int dataStart, unsigned int dataLen);
 char * websocket_serverLinkToClient(int clntfd, char *head, unsigned int bufLen);
 void delayms(int ms);
 int websocket_getHead(struct client_rw *clientRw);
+char *websocket_getRecvPackage(struct client_rw *clientRw, unsigned int *recvPackageLen);
 
+#endif //NEW_WEBSOCKET_SERVER_WEBSOCKET_COMMON_H
