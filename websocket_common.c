@@ -365,10 +365,10 @@ char *websocket_getRecvPackage(struct client_rw *clientRw, unsigned int *recvPac
         unsigned char maskKey[MASK_LEN] = {0};
         WebSocket_CommunicationType type;
         unsigned char package[LINE_MAX];
-        char *message;
+        char *message_ptr;
 
         memset(package, 0, LINE_MAX);
-        memset(message, 0, LINE_MAX);
+        //memset(message, 0, LINE_MAX);
         type = websocket_getType(clientRw->recv_buf, clientRw->recv_num);
         if(type == WCT_BINDATA || type == WCT_TXTDATA || type == WCT_PING) {
             isMask = websocket_isMask(clientRw->recv_buf, clientRw->recv_num);
@@ -391,10 +391,10 @@ char *websocket_getRecvPackage(struct client_rw *clientRw, unsigned int *recvPac
                 clientRw->recv_num -= packageLen;
                 pthread_mutex_unlock(&clientRw->recv_lock);
 
-                message = websocket_dePackage(package, packageLen, isMask, (char *)maskKey, dataStart, dataLen);
+                message_ptr = websocket_dePackage(package, packageLen, isMask, (char *)maskKey, dataStart, dataLen);
                 if(type == WCT_PING) {
                     memset(package, 0, LINE_MAX);
-                    int pongPackageLen = websocket_enPackage((unsigned char *)message, dataLen, package, LINE_MAX, true, WCT_PONG);
+                    int pongPackageLen = websocket_enPackage((unsigned char *)message_ptr, dataLen, package, LINE_MAX, true, WCT_PONG);
                     char *pongPackage = (char *)malloc((strlen(DP_PONG) + pongPackageLen) * sizeof(char));
                     strncpy(pongPackage, DP_PONG, strlen(DP_PONG));
                     strncat(pongPackage, (char *)package, pongPackageLen);
@@ -402,7 +402,7 @@ char *websocket_getRecvPackage(struct client_rw *clientRw, unsigned int *recvPac
                     return pongPackage;
                 }
                 *recvPackageLen = packageLen;
-                return message;
+                return message_ptr;
             } else
                 return DP_SHORT;
         } else if(type == WCT_DISCONN) {
