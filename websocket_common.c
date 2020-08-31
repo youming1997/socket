@@ -1,5 +1,8 @@
+//
+// Created by 朱宏宽 on 2020/8/29.
+//
 
-#include "include/websocket_common.h"
+#include "websocket_common.h"
 
 int base64_encode( const char *indata, int in_len, char *outdata) {
     BIO *b64, *bio;
@@ -77,7 +80,7 @@ int websocket_enPackage(unsigned char *data, unsigned int dataLen, unsigned char
     if(dataLen < 126) {
         *package++ |= (dataLen & 0x7F);
         len += 1;
-    } else if(dataLen < 65535) {
+    } else if(dataLen < 0xFFFF) {
         if(packageMaxLen < 4)
             return -1;
         *package++ |= 0x7E;
@@ -129,144 +132,144 @@ int websocket_enPackage(unsigned char *data, unsigned int dataLen, unsigned char
     return len;
 }
 
-WebSocket_CommunicationType websocket_isType(unsigned char *data, unsigned int dataLen) {
+WebSocket_CommunicationType websocket_getType(unsigned char *package, unsigned int packageLen) {
     char type;
-    type = data[0] & 0x0F;
-
-    if(data[0] & 0x80) {
-        switch (type) {
-            case 0x01:
-                return WCT_TXTDATA;
-            case 0x02:
-                return WCT_BINDATA;
-            case 0x08:
-                return WCT_DISCONN;
-            case 0x09:
-                return WCT_PING;
-            case 0x0A:
-                return WCT_PONG;
-            default:
-                return WCT_ERR;
-        }
-    } else if(type == 0x00) {
-        return WCT_MINDATA;
-    } else
-        return WCT_ERR;
+    type = package[0] & 0x0F;
+    if (packageLen >= 1) {
+        if (package[0] & 0x80) {
+            switch (type) {
+                case 0x01:
+                    return WCT_TXTDATA;
+                case 0x02:
+                    return WCT_BINDATA;
+                case 0x08:
+                    return WCT_DISCONN;
+                case 0x09:
+                    return WCT_PING;
+                case 0x0A:
+                    return WCT_PONG;
+                default:
+                    return WCT_ERR;
+            }
+        }else if (type == 0x00) {
+            return WCT_MINDATA;
+        } else
+            return WCT_ERR;
+    }
+    return WCT_ERR;
 }
 
-int websocket_isMask(unsigned char *data, unsigned int dataLen) {
+int websocket_isMask(unsigned char *package, unsigned int dataLen) {
     int mask = 0;
 
-    if(data[1] & 0x80 == 0x80)
+    if(package[1] & 0x80 == 0x80)
         mask = 1;
 
     return mask;
 }
 
-int websocket_getDataLen(unsigned char *data, unsigned int dataLen, int isMask, unsigned char *maskKey, int *dataStart, int *payLoadLen) {
-    int len;
-    int start;
-    int count;
+/**
+ *
+ * @param data //数据包
+ * @param dataLen //数据包长度
+ * @param maskKey //掩码
+ * @param dataStart //数据起始点
+ * @return len //数据长度
+ */
+int websocket_getDataLen(unsigned char *package, unsigned int packageLen, int isMask, unsigned char *maskKey, int *dataStart, int *recvPackageLen) {
+    int len, start, recvLen;
+    int count = 0;
+    recvLen = *recvPackageLen;
 
     if(isMask) {
         count = MASK_LEN;
     }
 
-    len = data[1] & 0x7F;
-    payLoadLen = &len;
+    len = package[1] & 0x7F;
+//    *payLoadLen = len;
 
     if(len == 126) {
-        if(dataLen < 4)
+        if(packageLen < 4 + count)
             return -1;
-        len = data[2];
-        len = (len << 8) + data[3];
+        recvLen += 4;
+        len = package[2];
+        len = (len << 8) + package[3];
         if(isMask) {
-            maskKey[0] = data[4];
-            maskKey[1] = data[5];
-            maskKey[2] = data[6];
-            maskKey[3] = data[7];
+            maskKey[0] = package[4];
+            maskKey[1] = package[5];
+            maskKey[2] = package[6];
+            maskKey[3] = package[7];
             start = 8;
         } else
             start = 4;
     } else if(len == 127) {
-        if(dataLen < 10)
+        if(packageLen < 10 + count)
             return -1;
-        if(data[2] != 0 && data[3] != 0 && data[4] != 0 && data[5] != 0)
+        recvLen += 10;
+        if(package[2] != 0 && package[3] != 0 && package[4] != 0 && package[5] != 0)
             return -1;
-        len = data[6];
-        len = (len << 8) + data[7];
-        len = (len << 8) + data[8];
-        len = (len << 8) + data[9];
+        len = package[6];
+        len = (len << 8) + package[7];
+        len = (len << 8) + package[8];
+        len = (len << 8) + package[9];
         if(isMask) {
-            maskKey[0] = data[10];
-            maskKey[1] = data[11];
-            maskKey[2] = data[12];
-            maskKey[3] = data[13];
+            maskKey[0] = package[10];
+            maskKey[1] = package[11];
+            maskKey[2] = package[12];
+            maskKey[3] = package[13];
             start = 14;
         } else
             start = 10;
     } else {
-        if(dataLen < len + 2 + count)
+        if(packageLen < len + 2 + count)
             return -1;
+        recvLen += 2;
         if(isMask) {
-            maskKey[0] = data[2];
-            maskKey[1] = data[3];
-            maskKey[2] = data[4];
-            maskKey[3] = data[5];
+            maskKey[0] = package[2];
+            maskKey[1] = package[3];
+            maskKey[2] = package[4];
+            maskKey[3] = package[5];
             start = 6;
         } else
             start = 2;
     }
 
+    *recvPackageLen = recvLen;
     *dataStart = start;
     return len;
 }
 
-int websocket_dePackage(unsigned char *data, unsigned int dataLen, unsigned char *package, unsigned int packageMaxLen, unsigned int *packageLen) {
-    unsigned char maskKey[4] = {0};    // 掩码
+char *websocket_dePackage(unsigned char *package, unsigned int packageLen, int isMask, char *maskKey, int dataStart, unsigned int dataLen) {
+    unsigned char data[dataLen + 1];
     unsigned char temp1, temp2;
-    char Mask = 0, type;
-    int count, ret;
-    int i, len = 0, dataStart = 0;
-    int isMask, payLoadLen;
-    if(dataLen < 2)
-        return -1;
+    int i;
 
     //printf("data\n%s\n", data);
-    ret = websocket_isType(data, dataLen);
-    isMask = websocket_isMask(data, dataLen);
-    len = websocket_getDataLen(data, dataLen, isMask, maskKey, &dataStart, &payLoadLen);
     //
-    if(dataLen < len + dataStart)
-        return WCT_ERR;
+    if(packageLen < dataLen + dataStart)
+        return NULL;
+//    //
+//    if(dataMaxLen < len + 1)
+//        return WCT_ERR;
     //
-    if(packageMaxLen < len + 1)
-        return WCT_ERR;
-    //
-    printf("maskKey = ");
-    for(i = 0; i < MASK_LEN; ++i) {
-        printf("%.2x", maskKey[i]);
-    }
-    printf("\n");
     if(isMask)    // 解包数据使用掩码时, 使用异或解码, maskKey[4]依次和数据异或运算, 逻辑如下
     {
         //printf("depackage : len/%d\r\n", len);
-        for(i = 0; i < len; i++)
+        for(i = 0; i < dataLen; ++i)
         {
             temp1 = maskKey[i % 4];
-            temp2 = data[i + dataStart];
-            package[i] = (char)(((~temp1)&temp2) | (temp1&(~temp2)));  // 异或运算后得到数据
+            temp2 = package[i + dataStart];
+            data[i] = (char)(((~temp1)&temp2) | (temp1&(~temp2)));  // 异或运算后得到数据
         }
-        *package = '\0';
+        data[i] = '\0';
     }
     else    // 解包数据没使用掩码, 直接复制数据段
     {
-        memcpy(package, &data[dataStart], len);
-        package[len] = '\0';
+        memcpy(data, &data[dataStart], dataLen);
+        data[dataLen] = '\0';
     }
-    *packageLen = len;
     //
-    return ret;
+    return data;
 }
 
 void delayms(int ms) {
@@ -297,7 +300,7 @@ char * websocket_serverLinkToClient(int clntfd, char *head, unsigned int bufLen)
     printf("clntfd = %d\n", clntfd);
     responsePackage = (char *)malloc(sizeof(char) * 1024);
     responseKey = (unsigned char *)malloc(sizeof(char) * 1024);
-    while(level) {
+    do {
         memset(line, 0, 1024);
         level = readLine(head, level, line);
         printf("line: %s\n", line);
@@ -315,7 +318,7 @@ char * websocket_serverLinkToClient(int clntfd, char *head, unsigned int bufLen)
                                      "Sec-WebSocket-Accept: %s\r\n\r\n", responseKey);
             break;
         }
-    }
+    } while(level);
     printf("responsepackage\n");
     printf("%s\n", responsePackage);
 
@@ -324,27 +327,88 @@ char * websocket_serverLinkToClient(int clntfd, char *head, unsigned int bufLen)
 }
 
 int websocket_getHead(struct client_rw *clientRw) {
-    unsigned int headStart = 0, headEnd = 0, j;
-    for(j = 0; j < clientRw->recv_num; ++j) {
-        if(clientRw->recv_buf[j] == 'G' && clientRw->recv_buf[j + 1] == 'E' && clientRw->recv_buf[j + 2] == 'T')
-            headStart = j;
-        if(clientRw->recv_buf[j] == '\r' && clientRw->recv_buf[j + 1] == '\n' && clientRw->recv_buf[j + 2] == '\r' && clientRw->recv_buf[j + 3] == '\n')
-            headEnd = j + 3;
+    unsigned int headStart = 0, headEnd = 0, i;
+    for(i = 0; i < clientRw->recv_num; ++i) {
+        if(clientRw->recv_buf[i] == 'G' && clientRw->recv_buf[i + 1] == 'E' && clientRw->recv_buf[i + 2] == 'T')
+            headStart = i;
+        if(clientRw->recv_buf[i] == '\r' && clientRw->recv_buf[i + 1] == '\n' && clientRw->recv_buf[i + 2] == '\r' && clientRw->recv_buf[j + 3] == '\n')
+            headEnd = i + 3;
     }
     if(headEnd != 0) {
         char head[headEnd - headStart + 1];
         memset(head, 0, headEnd - headStart + 1);
         memcpy(head, clientRw->recv_buf + headStart, headEnd - headStart + 1);
+        printf("head\n%s", head);
         char *responsePackage = websocket_serverLinkToClient(clientRw->clntfd, head, headEnd - headStart + 1);
-        memset(clientRw->recv_buf, 0, SAVE_MAX);
-        clientRw->recv_num = 0;
+        pthread_mutex_lock(&clientRw->recv_lock);
+        for(i = headStart; clientRw->recv_buf[i + headEnd - headStart + 1] != 0; ++i) {
+            clientRw->recv_buf[i] = clientRw->recv_buf[i + headEnd - headStart + 1];
+        }
+        memset(clientRw->recv_buf + i, 0, clientRw->recv_num - i);
+        clientRw->recv_num -= headEnd - headStart;
+        pthread_mutex_unlock(&clientRw->recv_lock);
+
+        pthread_mutex_lock(&clientRw->send_lock);
         memcpy(clientRw->send_buf, responsePackage, strlen(responsePackage));
         clientRw->send_num = strlen(responsePackage);
+        pthread_mutex_unlock(&clientRw->send_lock);
+        free(responsePackage);
         return 1;
     }
     return 0;
 }
 
-void websocket_getRecvPackage(struct client_rw *clientRw) {
+char *websocket_getRecvPackage(struct client_rw *clientRw, unsigned int *recvPackageLen) {
+    if(clientRw->recv_num != 0) {
+        int isMask = 0, dataLen = 0, dataStart = 0, packageLen = 0;
+        int i;
+        unsigned char maskKey[MASK_LEN] = {0};
+        WebSocket_CommunicationType type;
+        unsigned char package[LINE_MAX];
+        char *message;
 
+        memset(package, 0, LINE_MAX);
+        memset(message, 0, LINE_MAX);
+        type = websocket_getType(clientRw->recv_buf, clientRw->recv_num);
+        if(type == WCT_BINDATA || type == WCT_TXTDATA || type == WCT_PING) {
+            isMask = websocket_isMask(clientRw->recv_buf, clientRw->recv_num);
+            if(isMask) {
+                packageLen += MASK_LEN;
+            }
+            dataLen = websocket_getDataLen(clientRw->recv_buf, clientRw->recv_num, isMask, maskKey, &dataStart, &packageLen);
+            if(-1 == dataLen) {
+                return NULL;
+            }
+            packageLen += dataLen;
+            if(clientRw->recv_num >= packageLen) {
+
+                pthread_mutex_lock(&clientRw->recv_lock);
+                memcpy(package, clientRw->recv_buf, packageLen);
+                for(i = 0; clientRw->recv_buf[i + packageLen + 1] != 0; ++i) {
+                    clientRw->recv_buf[i] = clientRw->recv_buf[i + packageLen + 1];
+                }
+                memset(clientRw->recv_buf + i, 0, clientRw->recv_num - i);
+                clientRw->recv_num -= packageLen;
+                pthread_mutex_unlock(&clientRw->recv_lock);
+
+                message = websocket_dePackage(package, packageLen, isMask, (char *)maskKey, dataStart, dataLen);
+                if(type == WCT_PING) {
+                    memset(package, 0, LINE_MAX);
+                    int pongPackageLen = websocket_enPackage((unsigned char *)message, dataLen, package, LINE_MAX, true, WCT_PONG);
+                    char *pongPackage = (char *)malloc((strlen(DP_PONG) + pongPackageLen) * sizeof(char));
+                    strncpy(pongPackage, DP_PONG, strlen(DP_PONG));
+                    strncat(pongPackage, (char *)package, pongPackageLen);
+                    *recvPackageLen = pongPackageLen;
+                    return pongPackage;
+                }
+                *recvPackageLen = packageLen;
+                return message;
+            } else
+                return DP_SHORT;
+        } else if(type == WCT_DISCONN) {
+            clientRw->state = CS_CLOSED;
+            return NULL;
+        }
+    }
+    return NULL;
 }
