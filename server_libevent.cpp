@@ -9,7 +9,6 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <limits.h>
-#include <signal.h>
 
 #include <event2/event.h>
 
@@ -82,10 +81,12 @@ int main() {
     }
     printf("bind OK\n");
 
-    int on = 1;
-    setsockopt(servfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-    int old_option = fcntl(servfd, F_GETFL, 0);
-    fcntl(servfd, F_SETFL, old_option | O_NONBLOCK);
+//    int on = 1;
+//    setsockopt(servfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+//    int old_option = fcntl(servfd, F_GETFL, 0);
+//    fcntl(servfd, F_SETFL, old_option | O_NONBLOCK);
+    evutil_make_socket_nonblocking(servfd);
+    evutil_make_listen_socket_reuseable(servfd);
 
     ret = listen(servfd, CLIENT_MAXNUM);
     if(-1 == ret) {
@@ -96,7 +97,7 @@ int main() {
     printf("listen OK\n");
 
     struct event_base *base = event_base_new();
-    struct event *accept_event;
+    struct event *accept_event, *signal_event;
 
     accept_event = event_new(base, servfd, EV_TIMEOUT | EV_READ | EV_PERSIST, accept_cb, base);
 
@@ -112,9 +113,9 @@ int main() {
     pthread_create(&workpid, NULL, (void *(*)(void *))check_state, (void *)base);
     event_base_dispatch(base);
 
-    event_base_free(base);
     g_flag = 0;
     pthread_join(workpid, NULL);
+    event_base_free(base);
 
     return 0;
 }
@@ -140,7 +141,7 @@ struct client_rw *client_rw_init(int clntfd, struct sockaddr_in c_addr, struct e
         free(clientRw);
         return NULL;
     }
-    clientRw->write_event = event_new(base, clntfd, EV_WRITE | EV_PERSIST, write_cb, clientRw);
+    clientRw->write_event = event_new(base, clntfd, EV_WRITE, write_cb, clientRw);
     if(clientRw->write_event == NULL) {
         printf("write_event error: %s, errno: %d", strerror(errno), errno);
         event_free(clientRw->read_event);
@@ -167,98 +168,55 @@ void check_state(struct event_base *base) {
     int i, j;
     while(g_flag) {
         for(i = 0; i < g_client_num; ++i) {
-            unsigned int isMask = 0, dataLen, dataStart, payLoadLen, recvdataLen = 0;
-            unsigned char maskKey[MASK_LEN];
+            pthread_mutex_lock(&g_clients[i].handle_lock);
             if(g_clients[i].state == CS_TCP_CONNECTED) {
                 int ret = websocket_getHead(&g_clients[i]);
                 if(ret == 1) {
                     g_clients[i].state = CS_WEBSOCKET_CONNECTED;
                 }
-                delayms(1);
-                continue;
+//                continue;
             }
             if(g_clients[i].state == CS_WEBSOCKET_CONNECTED) {
                 if(g_clients[i].recv_num != 0) {
-                    WebSocket_CommunicationType type = websocket_isType(g_clients[i].recv_buf, g_clients[i].recv_num);
-                    if(type == WCT_BINDATA || type == WCT_TXTDATA) {
-                        isMask = websocket_isMask(g_clients[i].recv_buf, g_clients[i].recv_num);
-                        if(isMask) {
-                            recvdataLen += MASK_LEN;
+                    char *message;
+                    unsigned int recvPackageLen;
+                    WebSocket_CommunicationType type = websocket_getType(g_clients[i].recv_buf, g_clients[i].recv_num);
+                    message = websocket_getRecvPackage(&g_clients[i], &recvPackageLen);
+                    if(strstr(message, DP_PONG) != NULL) {
+                        for(i = 0; message[i + strlen(DP_PONG) + 1] != 0; ++i) {
+                            message[i] = message[i + strlen(DP_PONG) + 1];
                         }
-                        dataLen = websocket_getDataLen(g_clients[i].recv_buf, g_clients[i].recv_num, (int)isMask, maskKey, &dataStart, &payLoadLen);
-                        recvdataLen += dataLen;
-                        if(payLoadLen == 126) {
-                            recvdataLen += 4;
-                        } else if(payLoadLen == 127) {
-                            recvdataLen += 10;
-                        } else {
-                            recvdataLen += 2;
-                        }
-                        if(recvdataLen <= g_clients[i].recv_num) {
-                            unsigned char recvPackage[LINE_MAX];
-                            unsigned char message[LINE_MAX];
-                            memset(recvPackage, 0, LINE_MAX);
-                            memcpy(recvPackage, g_clients[i].recv_buf, recvdataLen);
-                            printf("recvdataLen = %d", recvdataLen);
-                            memset(message, 0, LINE_MAX);
+                        memset(message + i, 0, strlen(message) - i);
+                        recvPackageLen -= strlen(DP_PONG);
+                        pthread_mutex_lock(&g_clients[i].send_lock);
+                        memcpy(g_clients[i].send_buf, message, recvPackageLen);
+                        g_clients[i].send_num += recvPackageLen;
+                        pthread_mutex_unlock(&g_clients[i].send_lock);
 
-                            printf("recvPackage = ");
-                            for(int j = 0; j < strlen(recvPackage); ++j) {
-                                printf("%.2x ", recvPackage[i]);
+                    } else if(strstr(message, DP_SHORT) != NULL) {
+                        continue;
+                    } else if(message == NULL) {
+                        continue;
+                    } else {
+                        char sendPackage[LINE_MAX];
+                        sprintf(sendPackage, "Client(clntfd = %d) said: %s\n", g_clients[i].clntfd, message);
+                        printf("Client(clntfd = %d) said: %s\n", g_clients[i].clntfd, message);
+                        int ret = websocket_enPackage((unsigned char *)sendPackage, strlen(sendPackage), (unsigned char *)message, LINE_MAX, false, type);
+                        if(ret == -1) {
+                            printf("打包出现问题\n");
+                        }
+                        for(j = 0; j < g_client_num; ++j) {
+                            if(g_clients[j].state == CS_WEBSOCKET_CONNECTED) {
+
+                                pthread_mutex_lock(&g_clients[j].send_lock);
+                                memcpy(g_clients[j].send_buf, message, strlen(message));
+                                g_clients[j].send_num = strlen(message);
+                                pthread_mutex_unlock(&g_clients[j].send_lock);
+
                             }
-                            websocket_dePackage(recvPackage, recvdataLen, message, LINE_MAX, &dataLen);
-                            printf("Client(clntfd = %d) said: %s\n", g_clients[i].clntfd, message);
-                            for(j = 0; j < g_client_num; ++j) {
-                                if(g_clients[j].state == CS_WEBSOCKET_CONNECTED) {
-                                    memcpy(g_clients[j].send_buf, recvPackage, recvdataLen);
-                                    g_clients[j].send_num = recvdataLen;
-                                }
-                            }
-                            for(j = 0; j + recvdataLen < g_clients[i].recv_num; ++j) {
-                                g_clients[i].recv_buf[j] = g_clients[i].recv_buf[j + recvdataLen];
-                            }
-                            memset(g_clients + j, 0, g_clients[i].recv_num - recvdataLen);
                         }
                     }
-                    if(type == WCT_DISCONN) {
-                        g_clients[i].state = CS_CLOSED;
-                    }
-                    if(type == WCT_PING) {
-                        char pongPackage[LINE_MAX];
-                        char message[LINE_MAX];
-                        //memcpy(g_clients[i].send_buf, g_clients[i].recv_buf, g_clients[i].recv_num);
-                        websocket_dePackage(g_clients[i].recv_buf, g_clients[i].recv_num, (unsigned char *)message, LINE_MAX, &dataLen);
-                        websocket_enPackage((unsigned char *)message, dataLen, (unsigned char *)pongPackage, LINE_MAX, true, WCT_PONG);
-                        memcpy(g_clients[i].send_buf, pongPackage, strlen(pongPackage));
-                        g_clients[i].send_num = strlen(pongPackage);
-                        g_clients[i].state = CS_SENDING;
-                    }
                 }
-            }
-            if(g_clients[i].state == CS_HANDLING && recvdataLen <= g_clients[i].recv_num) {
-                unsigned char recvPackage[LINE_MAX];
-                unsigned char message[LINE_MAX];
-                memset(recvPackage, 0, LINE_MAX);
-                memcpy(recvPackage, g_clients[i].recv_buf, recvdataLen);
-                memset(message, 0, LINE_MAX);
-
-                printf("recvPackage = ");
-                for(int j = 0; j < strlen(recvPackage); ++j) {
-                    printf("%.2x ", recvPackage[i]);
-                }
-                websocket_dePackage(recvPackage, recvdataLen, message, LINE_MAX, &dataLen);
-                printf("Client(clntfd = %d) said: %s\n", g_clients[i].clntfd, message);
-                for(j = 0; j < g_client_num; ++j) {
-                    if(g_clients[j].state == CS_WEBSOCKET_CONNECTED) {
-                        memcpy(g_clients[j].send_buf, recvPackage, recvdataLen);
-                        g_clients[j].send_num = recvdataLen;
-                    }
-                }
-                for(j = 0; j + recvdataLen < g_clients[i].recv_num; ++j) {
-                    g_clients[i].recv_buf[j] = g_clients[i].recv_buf[j + recvdataLen];
-                }
-                memset(g_clients + j, 0, g_clients[i].recv_num - recvdataLen);
-                g_clients[i].state = CS_WEBSOCKET_CONNECTED;
             }
             if(g_clients[i].state == CS_CLOSED) {
                 printf("client(clntfd = %d) has been shutdown\n", g_clients[i].clntfd);
@@ -266,7 +224,10 @@ void check_state(struct event_base *base) {
                 client_rw_free(&g_clients[i]);
                 continue;
             }
+            pthread_mutex_unlock(&g_clients[i].handle_lock);
         }
+        sleep(1);
+    }
 //        if(g_client_num == 0) {
 //            overtime++;
 //            if(overtime >= 6000) {
@@ -275,10 +236,7 @@ void check_state(struct event_base *base) {
 //                event_base_loopexit(base, &tv);
 //                g_flag = 0;
 //            }
-//
 //        }
-        delayms(1);
-    }
 }
 
 void accept_cb(int servfd, short event, void *arg) {
@@ -294,6 +252,7 @@ void accept_cb(int servfd, short event, void *arg) {
         printf("accept error: %s, errno: %d", strerror(errno), errno);
         return ;
     }
+    printf("accept OK\n");
 
     clientRw = client_rw_init(clntfd, c_addr, base);
     g_clients[g_client_num] = *clientRw;
@@ -312,20 +271,19 @@ void accept_cb(int servfd, short event, void *arg) {
         return ;
     }
     g_client_num++;
-//    client_rw_free(clientRw);
 }
 
 void read_cb(int clntfd, short event, void *arg) {
     int ret, i, j;
     char recvPackage[LINE_MAX];
-    ret = recv(clntfd, recvPackage, LINE_MAX, 0);
-    if(ret == -1) {
-        printf("recv error: %s, errno: %d", strerror(errno), errno);
-        if(errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN) {
-            return ;
-        } else {
-            for(i = 0; i < g_client_num; ++i) {
-                if(g_clients[i].clntfd == clntfd) {
+    for(i = 0; i < g_client_num; ++i) {
+        if (g_clients[i].clntfd == clntfd) {
+            ret = recv(clntfd, recvPackage, LINE_MAX, 0);
+            if(ret == -1) {
+                printf("recv error: %s, errno: %d", strerror(errno), errno);
+                if(errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN) {
+                    return ;
+                } else {
                     client_rw_free(&g_clients[i]);
                     close(g_clients[i].clntfd);
                     for(j = i; j + 1 < g_client_num; ++j) {
@@ -334,11 +292,7 @@ void read_cb(int clntfd, short event, void *arg) {
                     g_client_num--;
                     return ;
                 }
-            }
-        }
-    } else if(ret == 0) {
-        for(i = 0; i < g_client_num; ++i) {
-            if(g_clients[i].clntfd == clntfd) {
+            } else if(ret == 0) {
                 client_rw_free(&g_clients[i]);
                 close(g_clients[i].clntfd);
                 for(j = i; j + 1 < g_client_num; ++j) {
@@ -347,17 +301,18 @@ void read_cb(int clntfd, short event, void *arg) {
                 g_client_num--;
                 return ;
             }
-        }
-        return ;
-    }
 
-    for(i = 0; i < g_client_num; ++i) {
-        if(g_clients[i].clntfd == clntfd) {
-            pthread_mutex_lock(&g_clients[i].recv_lock);
-            memcpy(g_clients[i].recv_buf + g_clients[i].recv_num, recvPackage, ret);
-            g_clients[i].recv_num += ret;
-            pthread_mutex_unlock(&g_clients[i].recv_lock);
-            break;
+        pthread_mutex_lock(&g_clients[i].recv_lock);
+        memcpy(g_clients[i].recv_buf + g_clients[i].recv_num, recvPackage, ret);
+        g_clients[i].recv_num += ret;
+        printf("g_clients[%d].recv_buf = ", i);
+        for(j = 0; j < g_clients[i].recv_num; ++j) {
+            printf("%x ", g_clients[i].recv_buf[j]);
+        }
+        printf("\n");
+        pthread_mutex_unlock(&g_clients[i].recv_lock);
+
+        break;
         }
     }
 }
@@ -370,8 +325,9 @@ void write_cb(int clntfd, short event, void *arg) {
             break;
         }
     }
-    //if(g_clients[i].state == CS_SENDING) {
     if(g_clients[i].send_num != 0) {
+
+        printf("send_buf = %s\n", g_clients[i].send_buf);
         pthread_mutex_lock(&g_clients[i].send_lock);
         memcpy(sendPackage, g_clients[i].send_buf, g_clients[i].send_num);
         for(j = 0; g_clients[i].send_buf[j + g_clients[i].send_num] != 0; ++j) {
@@ -379,6 +335,7 @@ void write_cb(int clntfd, short event, void *arg) {
         }
         memset(g_clients[i].send_buf + j, 0, SAVE_MAX - j);
         pthread_mutex_unlock(&g_clients[i].send_lock);
+
         ret = send(clntfd, sendPackage, g_clients[i].send_num, 0);
         if(ret == -1) {
             printf("send error: %s, errno: %d", strerror(errno), errno);
@@ -394,6 +351,7 @@ void write_cb(int clntfd, short event, void *arg) {
                 }
             }
         }
+        printf("send_buf = %s\n", g_clients[i].send_buf);
+        g_clients[i].send_num = 0;
     }
-    //}
 }
