@@ -35,7 +35,7 @@ void websocket_getRandomString(unsigned char *buf, unsigned int len) {
     srand(time(0));
 
     for(i = 0; i < len; ++i) {
-        temp = (unsigned char)rand()%256;
+        temp = (unsigned char)rand() % 256;
         buf[i] = temp;
     }
 }
@@ -79,7 +79,7 @@ int websocket_enPackage(unsigned char *data, unsigned int dataLen, unsigned char
         *package = 0x00;
     }
     len += 1;
-    printf("package = %.2x", *package);
+//    printf("package = %.2x", *package);
 
     if(dataLen < 126) {
         *package++ |= (dataLen & 0x7F);
@@ -123,15 +123,16 @@ int websocket_enPackage(unsigned char *data, unsigned int dataLen, unsigned char
             temp2 = data[i];
             *package++ = (char)(((~temp1) & temp2) | (temp1 & (~temp2)));
         }
-        len += dataLen;
+ //       len += dataLen;
     } else {
         if(packageMaxLen < len + dataLen) {
             return -1;
         }
         memcpy(package, data, dataLen);
-        package[dataLen] = '\0';
-        len += dataLen;
+//        package[dataLen] = '\0';
+//        len += dataLen;
     }
+    len += dataLen;
 //    *package = *send;
 
     return len;
@@ -159,13 +160,12 @@ WebSocket_CommunicationType websocket_getType(unsigned char *package, unsigned i
         return WCT_MINDATA;
     } else
         return WCT_ERR;
-    return WCT_ERR;
 }
 
 int websocket_isMask(unsigned char *package, unsigned int dataLen) {
     int mask = 0;
 
-    if(package[1] & 0x80 == 0x80)
+    if((package[1] & 0x80) == 0x80)
         mask = 1;
 
     return mask;
@@ -247,7 +247,7 @@ int websocket_dePackage(const unsigned char *package, unsigned int packageLen, u
     unsigned char temp1, temp2;
     unsigned int i;
 
-    data = (char *)malloc(sizeof(char) * (dataLen + 1));
+    data = (char *)malloc(sizeof(char) * (dataLen));
     //printf("data\n%s\n", data);
     //
     if(packageLen < dataLen + dataStart)
@@ -265,15 +265,15 @@ int websocket_dePackage(const unsigned char *package, unsigned int packageLen, u
             temp2 = package[i + dataStart];
             data[i] = (char)(((~temp1) & temp2) | (temp1 & (~temp2)));  // 异或运算后得到数据
         }
-        data[i] = '\0';
     }
     else    // 解包数据没使用掩码, 直接复制数据段
     {
-        memcpy(data, &data[dataStart], dataLen);
+        memcpy(data, &package[dataStart], dataLen);
         data[dataLen] = '\0';
     }
     //
-    memcpy(message, data, strlen(data));
+    memcpy(message, data, dataLen);
+    free(data);
     return 1;
 }
 
@@ -308,7 +308,7 @@ char *websocket_serverLinkToClient(int clntfd, char *head, unsigned int bufLen) 
     do {
         memset(line, 0, 1024);
         level = readLine(head, level, line);
-        printf("line: %s\n", line);
+//        printf("line: %s\n", line);
 
         if(strstr(line, "Sec-WebSocket-Key: ") != NULL) {
             strcat(line, GUID);
@@ -324,8 +324,8 @@ char *websocket_serverLinkToClient(int clntfd, char *head, unsigned int bufLen) 
             break;
         }
     } while (level);
-    printf("responsepackage\n");
-    printf("%s\n", responsePackage);
+//    printf("responsepackage\n");
+//    printf("%s\n", responsePackage);
 
     free(responseKey);
     return responsePackage;
@@ -341,20 +341,20 @@ int websocket_getHead(struct client_rw *clientRw) {
     }
     if(headEnd != 0) {
         char head[headEnd - headStart + 1];
+        char temp[LINE_MAX];
         memset(head, 0, headEnd - headStart + 1);
         printf("head create...\n");
         pthread_mutex_lock(&clientRw->recv_lock);
         memcpy(head, clientRw->recv_buf + headStart, headEnd - headStart + 1);
         pthread_mutex_unlock(&clientRw->recv_lock);
 
-        printf("head\n%s", head);
+ //       printf("head\n%s", head);
         char *responsePackage = websocket_serverLinkToClient(clientRw->clntfd, head, headEnd - headStart + 1);
         
         pthread_mutex_lock(&clientRw->recv_lock);
-        for(j = headStart; clientRw->recv_buf[j + headEnd - headStart + 1] != 0; ++j) {
-            clientRw->recv_buf[j] = clientRw->recv_buf[j + headEnd - headStart + 1];
-        }
-        memset(clientRw->recv_buf + j, 0, clientRw->recv_num - j);
+        memcpy(temp, clientRw->recv_buf + headEnd + 1, clientRw->recv_num - headEnd);
+        memcpy(clientRw->recv_buf + headStart, temp, clientRw->recv_num - headEnd);
+        memset(clientRw->recv_buf + clientRw->recv_num - (headEnd - headStart + 1), 0, headEnd - headStart + 1);
         clientRw->recv_num -= headEnd - headStart + 1;
         pthread_mutex_unlock(&clientRw->recv_lock);
         
@@ -390,13 +390,13 @@ int websocket_getRecvPackage(struct client_rw *clientRw, unsigned char *message,
             }
             packageLen += dataLen;
             if(clientRw->recv_num >= packageLen) {
+                unsigned char temp[LINE_MAX];
 
                 pthread_mutex_lock(&clientRw->recv_lock);
                 memcpy(package, clientRw->recv_buf, packageLen);
-                for(i = 0; clientRw->recv_buf[i + packageLen + 1] != 0; ++i) {
-                    clientRw->recv_buf[i] = clientRw->recv_buf[i + packageLen + 1];
-                }
-                memset(clientRw->recv_buf + i, 0, clientRw->recv_num - i);
+                memcpy(temp, clientRw->recv_buf + packageLen, clientRw->recv_num - packageLen);
+                memcpy(clientRw->recv_buf, temp, clientRw->recv_num - packageLen);
+                memset(clientRw->recv_buf + (clientRw->recv_num - packageLen), 0, packageLen);
                 clientRw->recv_num -= packageLen;
                 pthread_mutex_unlock(&clientRw->recv_lock);
 
@@ -414,14 +414,14 @@ int websocket_getRecvPackage(struct client_rw *clientRw, unsigned char *message,
                     memcpy(message, pongPackage, pongPackageLen);
                     return WCT_PONG;
                 }
-                *recvPackageLen = packageLen;
+                *recvPackageLen = dataLen;
                 return 1;
             } else
                 return 0;
         } else if(type == WCT_DISCONN) {
             clientRw->state = CS_CLOSED;
-            return 0;
+            return -1;
         }
     }
-    return 0;
+    return -1;
 }
