@@ -1,5 +1,8 @@
-#ifndef NEW_WEBSOCKET_SERVER_WEBSOCKET_COMMON_H
-#define NEW_WEBSOCKET_SERVER_WEBSOCKET_COMMON_H
+//
+// Created by 朱宏宽 on 2020/8/29.
+//
+#ifndef WEBSOCKET_COMMON_H
+#define WEBSOCKET_COMMON_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +32,7 @@
 #define DP_SHORT "Not long enough.\n"
 #define DP_PONG "This is a pong package.\n"
 #define DP_ERR "Wrong type.\n"
+#define DP_CLOSED "Client has been shutdown.\n"
 
 typedef enum {
     WCT_MINDATA = -20,      // 0x0：标识一个中间数据包
@@ -71,10 +75,10 @@ int websocket_enPackage(unsigned char *data, unsigned int dataLen, unsigned char
 WebSocket_CommunicationType websocket_getType(unsigned char *package, unsigned int packageLen);
 int websocket_isMask(unsigned char *package, unsigned int dataLen);
 int websocket_getDataLen(unsigned char *package, unsigned int packageLen, int isMask, unsigned char *maskKey, int *dataStart, int *payLoadLen);
-char *websocket_dePackage(unsigned char *package, unsigned int packageLen, int isMask, char *maskKey, int dataStart, unsigned int dataLen);
+int websocket_dePackage(const unsigned char *package, unsigned int packageLen, unsigned char *message, int isMask, const char *maskKey, int dataStart, unsigned int dataLen);
 char * websocket_serverLinkToClient(int clntfd, char *head, unsigned int bufLen);
 void delayms(int ms);
 int websocket_getHead(struct client_rw *clientRw);
-char *websocket_getRecvPackage(struct client_rw *clientRw, unsigned int *recvPackageLen);
+int websocket_getRecvPackage(struct client_rw *clientRw, unsigned char *message, unsigned int *recvPackageLen);
 
-#endif //NEW_WEBSOCKET_SERVER_WEBSOCKET_COMMON_H
+#endif
