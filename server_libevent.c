@@ -12,7 +12,7 @@
 
 #include <event2/event.h>
 
-#include "websocket_common.h"
+#include "include/websocket_common.h"
 
 #define PORT 8000
 #define CLIENT_MAXNUM 100
@@ -47,13 +47,14 @@
 struct client_rw g_clients[CLIENT_MAXNUM];
 int g_client_num = 0;
 int g_flag = 1;
+pthread_mutex_t handle_lock;        //数据处理锁
 
 struct client_rw *client_rw_init(int clntfd, struct sockaddr_in c_addr, struct event_base *base);
 void client_rw_free(struct client_rw *clientRw);
 void accept_cb(int servfd, short event, void *arg);
 void read_cb(int clntfd, short event, void *arg);
 void write_cb(int clntfd, short event, void *arg);
-void check_state(struct event_base *base);
+static void *check_state(void *base);
 
 int main() {
     int servfd;
@@ -97,12 +98,12 @@ int main() {
     printf("listen OK\n");
 
     struct event_base *base = event_base_new();
-    struct event *accept_event, *signal_event;
+    struct event *accept_event;
 
     accept_event = event_new(base, servfd, EV_TIMEOUT | EV_READ | EV_PERSIST, accept_cb, base);
 
     if(event_add(accept_event, NULL) < 0) {
-        printf("accept error: %s, errno: %d", strerror(errno), errno);
+        printf("accept_event error: %s, errno: %d", strerror(errno), errno);
         close(servfd);
         event_free(accept_event);
         event_base_free(base);
@@ -110,7 +111,7 @@ int main() {
     }
 
     pthread_t workpid;
-    pthread_create(&workpid, NULL, (void *(*)(void *))check_state, (void *)base);
+    pthread_create(&workpid, NULL, check_state, (void *)base);
     event_base_dispatch(base);
 
     g_flag = 0;
@@ -133,7 +134,6 @@ struct client_rw *client_rw_init(int clntfd, struct sockaddr_in c_addr, struct e
     clientRw->send_num = 0;
     pthread_mutex_init(&clientRw->recv_lock, NULL);
     pthread_mutex_init(&clientRw->send_lock, NULL);
-    pthread_mutex_init(&clientRw->handle_lock, NULL);
     clientRw->state = CS_TCP_CONNECTED;
     clientRw->read_event = event_new(base, clntfd, EV_READ | EV_PERSIST, read_cb, clientRw);
     if(clientRw->read_event == NULL) {
@@ -141,7 +141,7 @@ struct client_rw *client_rw_init(int clntfd, struct sockaddr_in c_addr, struct e
         free(clientRw);
         return NULL;
     }
-    clientRw->write_event = event_new(base, clntfd, EV_WRITE, write_cb, clientRw);
+    clientRw->write_event = event_new(base, clntfd, EV_WRITE | EV_PERSIST, write_cb, clientRw);
     if(clientRw->write_event == NULL) {
         printf("write_event error: %s, errno: %d", strerror(errno), errno);
         event_free(clientRw->read_event);
@@ -156,7 +156,6 @@ void client_rw_free(struct client_rw *clientRw) {
     if(clientRw != NULL) {
         pthread_mutex_destroy(&clientRw->recv_lock);
         pthread_mutex_destroy(&clientRw->send_lock);
-        pthread_mutex_destroy(&clientRw->handle_lock);
         if(clientRw->read_event != NULL)
             event_free(clientRw->read_event);
         if(clientRw->write_event != NULL)
@@ -164,57 +163,87 @@ void client_rw_free(struct client_rw *clientRw) {
     }
 }
 
-void check_state(struct event_base *base) {
+void client_rw_del(int clntfd) {
+    int i, j;
+    pthread_mutex_lock(&handle_lock);
+    for (i = 0; i < g_client_num; ++i) {
+        if (g_clients[i].clntfd == clntfd) {
+            client_rw_free(&g_clients[i]);
+            close(g_clients[i].clntfd);
+            for (j = i; j + 1 < g_client_num; ++j) {
+                g_clients[j] = g_clients[j + 1];
+            }
+            g_client_num--;
+            return;
+        }
+    }
+    pthread_mutex_unlock(&handle_lock);
+}
+
+static void *check_state(void *base) {
     int i, j;
     while(g_flag) {
+        pthread_mutex_lock(&handle_lock);
         for(i = 0; i < g_client_num; ++i) {
-            pthread_mutex_lock(&g_clients[i].handle_lock);
+
             if(g_clients[i].state == CS_TCP_CONNECTED) {
                 int ret = websocket_getHead(&g_clients[i]);
                 if(ret == 1) {
                     g_clients[i].state = CS_WEBSOCKET_CONNECTED;
                 }
-//                continue;
+                continue;
             }
             if(g_clients[i].state == CS_WEBSOCKET_CONNECTED) {
                 if(g_clients[i].recv_num != 0) {
-                    char *message;
+                    unsigned char *message_ptr;
                     unsigned int recvPackageLen;
                     WebSocket_CommunicationType type = websocket_getType(g_clients[i].recv_buf, g_clients[i].recv_num);
-                    message = websocket_getRecvPackage(&g_clients[i], &recvPackageLen);
-                    if(strstr(message, DP_PONG) != NULL) {
-                        for(i = 0; message[i + strlen(DP_PONG) + 1] != 0; ++i) {
-                            message[i] = message[i + strlen(DP_PONG) + 1];
+                    message_ptr = (unsigned char *)malloc(sizeof(unsigned char) * LINE_MAX);
+                    
+                    int ret = websocket_getRecvPackage(&g_clients[i], message_ptr, &recvPackageLen);
+                    if(ret == WCT_PONG) {
+                        for(i = 0; message_ptr[i + strlen(DP_PONG) + 1] != 0; ++i) {
+                            message_ptr[i] = message_ptr[i + strlen(DP_PONG) + 1];
                         }
-                        memset(message + i, 0, strlen(message) - i);
+                        memset(message_ptr + i, 0, strlen((char *)message_ptr) - i);
                         recvPackageLen -= strlen(DP_PONG);
                         pthread_mutex_lock(&g_clients[i].send_lock);
-                        memcpy(g_clients[i].send_buf, message, recvPackageLen);
+                        memcpy(g_clients[i].send_buf, message_ptr, recvPackageLen);
                         g_clients[i].send_num += recvPackageLen;
                         pthread_mutex_unlock(&g_clients[i].send_lock);
 
-                    } else if(strstr(message, DP_SHORT) != NULL) {
+                        free(message_ptr);
+                    } else if(ret == -1) {
+                        free(message_ptr);
                         continue;
-                    } else if(message == NULL) {
+                    } else if(ret == 0) {
+                        free(message_ptr);
                         continue;
-                    } else {
+                    } else if(ret == 1){
                         char sendPackage[LINE_MAX];
-                        sprintf(sendPackage, "Client(clntfd = %d) said: %s\n", g_clients[i].clntfd, message);
-                        printf("Client(clntfd = %d) said: %s\n", g_clients[i].clntfd, message);
-                        int ret = websocket_enPackage((unsigned char *)sendPackage, strlen(sendPackage), (unsigned char *)message, LINE_MAX, false, type);
+                        sprintf(sendPackage, "Client(clntfd = %d) said: %s", g_clients[i].clntfd, message_ptr);
+                        printf("Client(clntfd = %d) said: %s\n", g_clients[i].clntfd, message_ptr);
+                        printf("strlen(sendPackage) = %lu\n", strlen(sendPackage));
+                        int ret = websocket_enPackage((unsigned char *)sendPackage, strlen(sendPackage), message_ptr, LINE_MAX, false, type);
                         if(ret == -1) {
                             printf("打包出现问题\n");
+                            free(message_ptr);
+                            continue;
                         }
                         for(j = 0; j < g_client_num; ++j) {
                             if(g_clients[j].state == CS_WEBSOCKET_CONNECTED) {
+                                if(g_clients[j].clntfd != g_clients[i].clntfd) {
 
-                                pthread_mutex_lock(&g_clients[j].send_lock);
-                                memcpy(g_clients[j].send_buf, message, strlen(message));
-                                g_clients[j].send_num = strlen(message);
-                                pthread_mutex_unlock(&g_clients[j].send_lock);
-
+                                    pthread_mutex_lock(&g_clients[j].send_lock);
+                                    memcpy(g_clients[j].send_buf, message_ptr, ret);
+                                    g_clients[j].send_num = ret;
+                                    pthread_mutex_unlock(&g_clients[j].send_lock);
+                                    
+                                }
                             }
                         }
+                        if(message_ptr != NULL)
+                            free(message_ptr);
                     }
                 }
             }
@@ -224,8 +253,8 @@ void check_state(struct event_base *base) {
                 client_rw_free(&g_clients[i]);
                 continue;
             }
-            pthread_mutex_unlock(&g_clients[i].handle_lock);
         }
+        pthread_mutex_unlock(&handle_lock);
         sleep(1);
     }
 //        if(g_client_num == 0) {
@@ -237,6 +266,7 @@ void check_state(struct event_base *base) {
 //                g_flag = 0;
 //            }
 //        }
+    return 0;
 }
 
 void accept_cb(int servfd, short event, void *arg) {
@@ -284,21 +314,11 @@ void read_cb(int clntfd, short event, void *arg) {
                 if(errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN) {
                     return ;
                 } else {
-                    client_rw_free(&g_clients[i]);
-                    close(g_clients[i].clntfd);
-                    for(j = i; j + 1 < g_client_num; ++j) {
-                        g_clients[j] = g_clients[j + 1];
-                    }
-                    g_client_num--;
+                    client_rw_del(clntfd);
                     return ;
                 }
             } else if(ret == 0) {
-                client_rw_free(&g_clients[i]);
-                close(g_clients[i].clntfd);
-                for(j = i; j + 1 < g_client_num; ++j) {
-                    g_clients[j] = g_clients[j + 1];
-                }
-                g_client_num--;
+                client_rw_del(clntfd);
                 return ;
             }
 
@@ -307,7 +327,7 @@ void read_cb(int clntfd, short event, void *arg) {
         g_clients[i].recv_num += ret;
         printf("g_clients[%d].recv_buf = ", i);
         for(j = 0; j < g_clients[i].recv_num; ++j) {
-            printf("%x ", g_clients[i].recv_buf[j]);
+            printf("%.2x ", g_clients[i].recv_buf[j]);
         }
         printf("\n");
         pthread_mutex_unlock(&g_clients[i].recv_lock);
@@ -325,33 +345,47 @@ void write_cb(int clntfd, short event, void *arg) {
             break;
         }
     }
+    if(i == g_client_num && g_clients[i].clntfd != clntfd) {
+        return ;
+    }
     if(g_clients[i].send_num != 0) {
 
-        printf("send_buf = %s\n", g_clients[i].send_buf);
         pthread_mutex_lock(&g_clients[i].send_lock);
-        memcpy(sendPackage, g_clients[i].send_buf, g_clients[i].send_num);
-        for(j = 0; g_clients[i].send_buf[j + g_clients[i].send_num] != 0; ++j) {
-            g_clients[i].send_buf[j] = g_clients[i].send_buf[j + g_clients[i].send_num];
+        printf("send_buf = ");
+        for(j = 0; j < g_clients[i].send_num; ++j) {
+            printf("%.2x ", g_clients[i].send_buf[j]);
         }
-        memset(g_clients[i].send_buf + j, 0, SAVE_MAX - j);
+        printf("\n");
+        printf("send_num = %lu\n", g_clients[i].send_num);
+        int sendnum = g_clients[i].send_num;
+        memcpy(sendPackage, g_clients[i].send_buf, g_clients[i].send_num);
+//        for(j = 0; g_clients[i].send_buf[j + g_clients[i].send_num] != 0; ++j) {
+//            g_clients[i].send_buf[j] = g_clients[i].send_buf[j + g_clients[i].send_num];
+//        }
+//        memset(g_clients[i].send_buf + j, 0, SAVE_MAX - j);
         pthread_mutex_unlock(&g_clients[i].send_lock);
 
-        ret = send(clntfd, sendPackage, g_clients[i].send_num, 0);
+        ret = send(clntfd, sendPackage, sendnum, 0);
         if(ret == -1) {
-            printf("send error: %s, errno: %d", strerror(errno), errno);
-            for(i = 0; i < g_client_num; ++i) {
-                if(g_clients[i].clntfd == clntfd) {
-                    client_rw_free(&g_clients[i]);
-                    close(g_clients[i].clntfd);
-                    for(j = i; j + 1 < g_client_num; ++j) {
-                        g_clients[j] = g_clients[j + 1];
-                    }
-                    g_client_num--;
-                    return ;
-                }
+            if (errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN) {
+                return;
+            } else {
+                printf("send error: %s, errno: %d", strerror(errno), errno);
+                client_rw_del(clntfd);
             }
+        } else if(ret == 0) {
+            return ;
+        } else if(ret < sendnum) {
+            pthread_mutex_lock(&g_clients[i].send_lock);
+            memcpy(g_clients[i].send_buf, sendPackage + ret, sendnum - ret);
+            memset(g_clients[i].send_buf + (sendnum - ret), 0, SAVE_MAX - (sendnum - ret));
+            g_clients[i].send_num -= (sendnum - ret);
+            pthread_mutex_unlock(&g_clients[i].send_lock);
+        } else if(ret == sendnum) {
+            pthread_mutex_lock(&g_clients[i].send_lock);
+            memset(g_clients[i].send_buf, 0, SAVE_MAX);
+            g_clients[i].send_num = 0;
+            pthread_mutex_unlock(&g_clients[i].send_lock);
         }
-        printf("send_buf = %s\n", g_clients[i].send_buf);
-        g_clients[i].send_num = 0;
     }
 }
