@@ -32,7 +32,7 @@
 #define DP_SHORT "Not long enough.\n"
 #define DP_PONG "This is a pong package.\n"
 #define DP_ERR "Wrong type.\n"
-#define DP_CLOSED "Client has been shutdown.\n"
+//#define DP_CLOSED "Client has been shutdown.\n"
 
 typedef enum {
     WCT_MINDATA = -20,      // 0x0：标识一个中间数据包
@@ -82,3 +82,4 @@ int websocket_getHead(struct client_rw *clientRw);
 int websocket_getRecvPackage(struct client_rw *clientRw, unsigned char *message, unsigned int *recvPackageLen);
 
 #endif
+
