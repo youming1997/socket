@@ -50,12 +50,12 @@
 std::map<int, struct client_rw> g_clients;
 //std::list<struct client_rw> g_clients;
 //struct client_rw g_clients[CLIENT_MAXNUM];
-int g_client_num = 0;
 int g_flag = 1;
 pthread_mutex_t handle_lock;        //数据处理锁
 
 struct client_rw *client_rw_init(int clntfd, struct sockaddr_in c_addr, struct event_base *base);
 void client_rw_free(struct client_rw *clientRw);
+void client_rw_del(int clntfd);
 void accept_cb(int servfd, short event, void *arg);
 void read_cb(int clntfd, short event, void *arg);
 void write_cb(int clntfd, short event, void *arg);
@@ -121,7 +121,7 @@ int main() {
     event_base_dispatch(base);
 
     g_flag = 0;
-    pthread_join(workpid, NULL);
+    pthread_kill(workpid, SIGQUIT);
     event_base_free(base);
 
     return 0;
@@ -171,24 +171,23 @@ void client_rw_free(struct client_rw *clientRw) {
 }
 
 void client_rw_del(int clntfd) {
-    std::map<int, struct client_rw>::iterator it_client = g_clients.begin();
-    for (; it_client != g_clients.end(); ++it_client) {
-        if (it_client->first == clntfd) {
-            client_rw_free(&(it_client->second));
-            close(it_client->first);
-            g_clients.erase(it_client);
-            g_client_num--;
-            return;
-        }
+    std::map<int, struct client_rw>::iterator it_client = g_clients.find(clntfd);
+    if (it_client != g_clients.end()) {
+        client_rw_free(&(it_client->second));
+        close(it_client->first);
+        g_clients.erase(it_client);
+        return;
+    } else {
+        printf("no such client which clntfd = %d", clntfd);
     }
 }
 
 static void *check_state(void *base) {
     int i;
-
+    std::map<int, struct client_rw>::iterator it_clients = g_clients.begin();
     while(g_flag) {
         pthread_mutex_lock(&handle_lock);
-        std::map<int, struct client_rw>::iterator it_clients = g_clients.begin();
+        it_clients = g_clients.begin();
         for(; it_clients != g_clients.end(); ++it_clients) {
 
             if(it_clients->second.state == CS_TCP_CONNECTED) {
@@ -257,6 +256,7 @@ static void *check_state(void *base) {
             if(it_clients->second.state == CS_CLOSED) {
                 printf("client(clntfd = %d) has been shutdown\n", it_clients->second.clntfd);
                 unsigned char closePackage[6];
+                memset(closePackage, 0, 6);
                 websocket_enPackage(NULL, 0, closePackage, 6, true, WCT_DISCONN);
                 send(it_clients->second.clntfd, closePackage, 6, 0);
                 pthread_mutex_unlock(&handle_lock);
@@ -298,24 +298,25 @@ void accept_cb(int servfd, short event, void *arg) {
     pthread_mutex_lock(&handle_lock);
     if(g_clients.size() < CLIENT_MAXNUM) {
         g_clients.insert(std::map<int, struct client_rw>::value_type(clntfd, *clientRw));
-        std::map<int, struct client_rw>::iterator it = g_clients.end();
-        if(event_add(clientRw->read_event, NULL) < 0) {
-            printf("read_event add error: %s, errno: %d\n", strerror(errno), errno);
-            client_rw_free(clientRw);
-            client_rw_free(&(it->second));
-            close(clntfd);
-            pthread_mutex_unlock(&handle_lock);
-            return ;
+        std::map<int, struct client_rw>::iterator it = g_clients.find();
+        if(it != g_clients.end()) {
+            if(event_add(clientRw->read_event, NULL) < 0) {
+                printf("read_event add error: %s, errno: %d\n", strerror(errno), errno);
+                client_rw_free(clientRw);
+                client_rw_free(&(it->second));
+                close(clntfd);
+                pthread_mutex_unlock(&handle_lock);
+                return ;
+            }
+            if(event_add(clientRw->write_event, NULL) < 0) {
+                printf("write_event add error: %s, errno: %d\n", strerror(errno), errno);
+                client_rw_free(clientRw);
+                client_rw_free(&(it->second));
+                close(clntfd);
+                pthread_mutex_unlock(&handle_lock);
+                return ;
+            }
         }
-        if(event_add(clientRw->write_event, NULL) < 0) {
-            printf("write_event add error: %s, errno: %d\n", strerror(errno), errno);
-            client_rw_free(clientRw);
-            client_rw_free(&(it->second));
-            close(clntfd);
-            pthread_mutex_unlock(&handle_lock);
-            return ;
-        }
-        g_client_num++;
     } else {
         printf("Client list is full\n");
         pthread_mutex_unlock(&handle_lock);
@@ -328,93 +329,92 @@ void accept_cb(int servfd, short event, void *arg) {
 void read_cb(int clntfd, short event, void *arg) {
     int ret, i = 0, j;
     char recvPackage[LINE_MAX];
-    std::map<int, struct client_rw>::iterator it_clients = g_clients.begin();
-    for(; it_clients != g_clients.end(); ++it_clients) {
-        if (it_clients->second.clntfd == clntfd) {
-            ret = recv(clntfd, recvPackage, LINE_MAX, 0);
-            if(ret == -1) {
-                printf("recv error: %s, errno: %d\n", strerror(errno), errno);
-                if(errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN) {
-                    return ;
-                } else {
-                    pthread_mutex_lock(&handle_lock);
-                    client_rw_del(clntfd);
-                    pthread_mutex_unlock(&handle_lock);
-                    return ;
-                }
-            } else if(ret == 0) {
+    memset(recvPackage, 0, LINE_MAX);
+    std::map<int, struct client_rw>::iterator it_clients = g_clients.find(clntfd);
+    if(it_clients != g_clients.end()) {
+        ret = recv(clntfd, recvPackage, LINE_MAX, 0);
+        if(ret == -1) {
+            printf("recv error: %s, errno: %d\n", strerror(errno), errno);
+            if(errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN) {
+                return ;
+            } else {
                 pthread_mutex_lock(&handle_lock);
                 client_rw_del(clntfd);
                 pthread_mutex_unlock(&handle_lock);
                 return ;
             }
-
-            pthread_mutex_lock(&it_clients->second.recv_lock);
-            memcpy(it_clients->second.recv_buf + it_clients->second.recv_num, recvPackage, ret);
-            it_clients->second.recv_num += ret;
-            pthread_mutex_unlock(&it_clients->second.recv_lock);
-
-            printf("g_clients[%d].recv_buf = ", i);
-            for(j = 0; j < it_clients->second.recv_num; ++j) {
-                printf("%.2x ", it_clients->second.recv_buf[j]);
-            }
-            printf("\n");
-
-            break;
+        } else if(ret == 0) {
+            pthread_mutex_lock(&handle_lock);
+            client_rw_del(clntfd);
+            pthread_mutex_unlock(&handle_lock);
+            return ;
         }
-        i++;
+
+        pthread_mutex_lock(&it_clients->second.recv_lock);
+        memcpy(it_clients->second.recv_buf + it_clients->second.recv_num, recvPackage, ret);
+        it_clients->second.recv_num += ret;
+        pthread_mutex_unlock(&it_clients->second.recv_lock);
+
+        printf("g_clients(clntfd = %d).recv_buf = ", it_clients->first);
+        for(j = 0; j < it_clients->second.recv_num; ++j) {
+            printf("%.2x ", it_clients->second.recv_buf[j]);
+        }
+        printf("\n");
+    } else {
+        printf("no such client which clntfd is %d", clntfd);
+        close(clntfd);
+        return ;
     }
 }
 
 void write_cb(int clntfd, short event, void *arg) {
     int ret, i, j;
     char sendPackage[LINE_MAX];
-    std::map<int, struct client_rw>::iterator it_clients = g_clients.begin();
-    for(; it_clients != g_clients.end(); ++it_clients) {
-        if(it_clients->second.clntfd == clntfd) {
-            break;
-        }
-    }
-    if(i == g_client_num && it_clients->second.clntfd != clntfd) {
-        return ;
-    }
-    if(it_clients->second.send_num != 0) {
-        printf("send_buf = ");
-        for(j = 0; j < it_clients->second.send_num; ++j) {
-            printf("%.2x ", it_clients->second.send_buf[j]);
-        }
-        printf("\n");
-        printf("send_num = %lu\n", it_clients->second.send_num);
-
-        pthread_mutex_lock(&it_clients->second.send_lock);
-        unsigned long sendnum = it_clients->second.send_num;
-        memcpy(sendPackage, it_clients->second.send_buf, it_clients->second.send_num);
-        pthread_mutex_unlock(&it_clients->second.send_lock);
-
-        ret = send(clntfd, sendPackage, sendnum, 0);
-        if(ret == -1) {
-            if (errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN) {
-                return;
-            } else {
-                printf("send error: %s, errno: %d\n", strerror(errno), errno);
-                pthread_mutex_lock(&handle_lock);
-                client_rw_del(clntfd);
-                pthread_mutex_unlock(&handle_lock);
+    memset(sendPackage, 0, LINE_MAX);
+    std::map<int, struct client_rw>::iterator it_clients = g_clients.find(clntfd);
+    if(it_clients != g_clients.end()) {
+        if(it_clients->second.send_num != 0) {
+            printf("send_buf = ");
+            for(j = 0; j < it_clients->second.send_num; ++j) {
+                printf("%.2x ", it_clients->second.send_buf[j]);
             }
-        } else if(ret == 0) {
-            return ;
-        } else if(ret < sendnum) {
+            printf("\n");
+            printf("send_num = %lu\n", it_clients->second.send_num);
+
             pthread_mutex_lock(&it_clients->second.send_lock);
-            memcpy(it_clients->second.send_buf, sendPackage + ret, sendnum - ret);
-            memset(it_clients->second.send_buf + (sendnum - ret), 0, SAVE_MAX - (sendnum - ret));
-            it_clients->second.send_num -= (sendnum - ret);
+            unsigned long sendnum = it_clients->second.send_num;
+            memcpy(sendPackage, it_clients->second.send_buf, it_clients->second.send_num);
             pthread_mutex_unlock(&it_clients->second.send_lock);
-        } else if(ret == sendnum) {
-            pthread_mutex_lock(&it_clients->second.send_lock);
-            memset(it_clients->second.send_buf, 0, SAVE_MAX);
-            it_clients->second.send_num = 0;
-            pthread_mutex_unlock(&it_clients->second.send_lock);
+
+            ret = send(clntfd, sendPackage, sendnum, 0);
+            if(ret == -1) {
+                if (errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN) {
+                    return;
+                } else {
+                    printf("send error: %s, errno: %d\n", strerror(errno), errno);
+                    pthread_mutex_lock(&handle_lock);
+                    client_rw_del(clntfd);
+                    pthread_mutex_unlock(&handle_lock);
+                }
+            } else if(ret == 0) {
+                return ;
+            } else if(ret < sendnum) {
+                pthread_mutex_lock(&it_clients->second.send_lock);
+                memcpy(it_clients->second.send_buf, sendPackage + ret, sendnum - ret);
+                memset(it_clients->second.send_buf + (sendnum - ret), 0, SAVE_MAX - (sendnum - ret));
+                it_clients->second.send_num -= (sendnum - ret);
+                pthread_mutex_unlock(&it_clients->second.send_lock);
+            } else if(ret == sendnum) {
+                pthread_mutex_lock(&it_clients->second.send_lock);
+                memset(it_clients->second.send_buf, 0, SAVE_MAX);
+                it_clients->second.send_num = 0;
+                pthread_mutex_unlock(&it_clients->second.send_lock);
+            }
         }
+    } else {
+        printf("no such client which clntfd is %d", clntfd);
+        close(clntfd);
+        return ;
     }
 }
 
