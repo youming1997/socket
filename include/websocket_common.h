@@ -11,6 +11,7 @@
 #include <time.h>
 #include <string.h>
 #include <limits.h>
+#include <map>
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -57,7 +58,7 @@ enum client_state {
 };
 
 struct client_rw {
-    int clntfd;                         //客户端句柄
+//    int clntfd;                         //客户端句柄
     struct sockaddr_in clnt_addr;       //客户端相关信息
     struct event *read_event;           //从客户端读数据的方法
     struct event *write_event;          //向客户端写数据的方法
@@ -76,10 +77,9 @@ WebSocket_CommunicationType websocket_getType(unsigned char *package, unsigned i
 int websocket_isMask(unsigned char *package, unsigned int dataLen);
 int websocket_getDataLen(unsigned char *package, unsigned int packageLen, int isMask, unsigned char *maskKey, int *dataStart, int *payLoadLen);
 int websocket_dePackage(const unsigned char *package, unsigned int packageLen, unsigned char *message, int isMask, const char *maskKey, int dataStart, unsigned int dataLen);
-char * websocket_serverLinkToClient(int clntfd, char *head, unsigned int bufLen);
+//char *websocket_serverLinkToClient(int clntfd, char *head);
 void delayms(int ms);
-int websocket_getHead(struct client_rw *clientRw);
+int websocket_getHead(std::map<int, struct client_rw>::iterator it);
 int websocket_getRecvPackage(struct client_rw *clientRw, unsigned char *message, unsigned int *recvPackageLen);
 
 #endif
-
