@@ -123,13 +123,13 @@ int websocket_enPackage(unsigned char *data, unsigned int dataLen, unsigned char
             temp2 = data[i];
             *package++ = (char)(((~temp1) & temp2) | (temp1 & (~temp2)));
         }
- //       len += dataLen;
+        //       len += dataLen;
     } else {
         if(packageMaxLen < len + dataLen) {
             return -1;
         }
         memcpy(package, data, dataLen);
-//        package[dataLen] = '\0';
+        package[dataLen] = '\0';
 //        len += dataLen;
     }
     len += dataLen;
@@ -295,28 +295,35 @@ int readLine(char *buf, int level, char *line) {
     return -1;
 }
 
-char *websocket_serverLinkToClient(int clntfd, char *head, unsigned int bufLen) {
-    int level = 0;
-    char *responsePackage, sha1Data[SHA_DIGEST_LENGTH];
+char *websocket_serverLinkToClient(int clntfd, char *head) {
+    int level = 0, size;
+    char sha1Data[SHA_DIGEST_LENGTH];
     char line[1024];
     unsigned char *responseKey;
-    const char * GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    char *responsePackage;
+    const char *GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     printf("clntfd = %d\n", clntfd);
     responsePackage = (char *)malloc(sizeof(char) * 1024);
     responseKey = (unsigned char *)malloc(sizeof(char) * 1024);
+    memset(responsePackage, 0, 1024);
     do {
         memset(line, 0, 1024);
         level = readLine(head, level, line);
 //        printf("line: %s\n", line);
 
         if(strstr(line, "Sec-WebSocket-Key: ") != NULL) {
+            //printf("line: %s\n", line);
             strcat(line, GUID);
-
             SHA1((unsigned char *)(line + 19), strlen(line + 19), (unsigned char *)sha1Data);
             //sha1Data = sha1_hash(line);
-            base64_encode(sha1Data, strlen(sha1Data), (char *)responseKey);
-
+            size = base64_encode(sha1Data, strlen(sha1Data), (char *)responseKey);
+            if(size != 29) {
+                free(responseKey);
+                free(responsePackage);
+                return NULL;
+            }
+//            printf("responseKey size = %d\n", size);
             sprintf(responsePackage, "HTTP/1.1 101 Switching Protocols\r\n"
                                      "Upgrade: websocket\r\n"
                                      "Connection: Upgrade\r\n"
@@ -324,44 +331,60 @@ char *websocket_serverLinkToClient(int clntfd, char *head, unsigned int bufLen) 
             break;
         }
     } while (level);
-//    printf("responsepackage\n");
-//    printf("%s\n", responsePackage);
+    printf("responsepackage\n");
+    printf("%s\n", responsePackage);
 
     free(responseKey);
-    return responsePackage;
+    if(level != -1)
+        return responsePackage;
+    else {
+        free(responsePackage);
+        return NULL;
+    }
+    return NULL;
 }
 
-int websocket_getHead(struct client_rw *clientRw) {
+int websocket_getHead(std::map<int, struct client_rw>::iterator it) {
     unsigned int headStart = 0, headEnd = 0, j;
-    for(j = 0; j < clientRw->recv_num; ++j) {
-        if(clientRw->recv_buf[j] == 'G' && clientRw->recv_buf[j + 1] == 'E' && clientRw->recv_buf[j + 2] == 'T')
-            headStart = j;
-        if(clientRw->recv_buf[j] == '\r' && clientRw->recv_buf[j + 1] == '\n' && clientRw->recv_buf[j + 2] == '\r' && clientRw->recv_buf[j + 3] == '\n')
+    for(j = 0; j < it->second.recv_num; ++j) {
+//        if(it->second.recv_buf[j] == 'G' && it->second.recv_buf[j + 1] == 'E' && it->second.recv_buf[j + 2] == 'T')
+//            headStart = j;
+        if(it->second.recv_buf[j] == '\r' && it->second.recv_buf[j + 1] == '\n' && it->second.recv_buf[j + 2] == '\r' && it->second.recv_buf[j + 3] == '\n')
             headEnd = j + 3;
     }
+    printf("headStart = %d, headEnd = %d\n", headStart, headEnd);
     if(headEnd != 0) {
-        char head[headEnd - headStart + 1];
+        char head[headEnd + 1];
         char temp[LINE_MAX];
-        memset(head, 0, headEnd - headStart + 1);
+        memset(head, 0, headEnd + 1);
         printf("head create...\n");
-        pthread_mutex_lock(&clientRw->recv_lock);
-        memcpy(head, clientRw->recv_buf + headStart, headEnd - headStart + 1);
-        pthread_mutex_unlock(&clientRw->recv_lock);
+        pthread_mutex_lock(&it->second.recv_lock);
+        memcpy(head, it->second.recv_buf + headStart, headEnd + 1);
+        pthread_mutex_unlock(&it->second.recv_lock);
 
- //       printf("head\n%s", head);
-        char *responsePackage = websocket_serverLinkToClient(clientRw->clntfd, head, headEnd - headStart + 1);
-        
-        pthread_mutex_lock(&clientRw->recv_lock);
-        memcpy(temp, clientRw->recv_buf + headEnd + 1, clientRw->recv_num - headEnd);
-        memcpy(clientRw->recv_buf + headStart, temp, clientRw->recv_num - headEnd);
-        memset(clientRw->recv_buf + clientRw->recv_num - (headEnd - headStart + 1), 0, headEnd - headStart + 1);
-        clientRw->recv_num -= headEnd - headStart + 1;
-        pthread_mutex_unlock(&clientRw->recv_lock);
-        
-        pthread_mutex_lock(&clientRw->send_lock);
-        memcpy(clientRw->send_buf, responsePackage, strlen(responsePackage));
-        clientRw->send_num = strlen(responsePackage);
-        pthread_mutex_unlock(&clientRw->send_lock);
+        //       printf("head\n%s", head);
+        char *responsePackage = NULL;
+        int i = 0;
+        while(responsePackage == NULL && i < 10) {
+            responsePackage = websocket_serverLinkToClient(it->first, head);
+            i++;
+            if(i == 10) {
+                printf("get head error!\n");
+                return 0;
+            }
+        }
+        pthread_mutex_lock(&it->second.recv_lock);
+        memcpy(temp, it->second.recv_buf + headEnd + 1, it->second.recv_num - headEnd);
+        memcpy(it->second.recv_buf, temp, it->second.recv_num - headEnd);
+        memset(it->second.recv_buf + it->second.recv_num - (headEnd + 1), 0, headEnd + 1);
+        it->second.recv_num -= headEnd + 1;
+        printf("it->second.recv_num = %lu", it->second.recv_num);
+        pthread_mutex_unlock(&it->second.recv_lock);
+
+        pthread_mutex_lock(&it->second.send_lock);
+        memcpy(it->second.send_buf, responsePackage, strlen(responsePackage));
+        it->second.send_num = strlen(responsePackage);
+        pthread_mutex_unlock(&it->second.send_lock);
         free(responsePackage);
         return 1;
     }
@@ -425,4 +448,3 @@ int websocket_getRecvPackage(struct client_rw *clientRw, unsigned char *message,
     }
     return -1;
 }
-
