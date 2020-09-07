@@ -122,7 +122,7 @@ int main() {
     event_base_dispatch(base);
 
     g_flag = 0;
-    pthread_kill(workpid, SIGQUIT);
+    //pthread_kill(workpid, SIGQUIT);
     event_base_free(base);
 
     return 0;
@@ -143,11 +143,13 @@ struct client_rw *client_rw_init(int clntfd, struct sockaddr_in c_addr, struct e
     pthread_mutex_init(&clientRw->send_lock, NULL);
     clientRw->state = CS_TCP_CONNECTED;
     clientRw->read_event = event_new(base, clntfd, EV_READ | EV_PERSIST, read_cb, clientRw);
+    
     if(clientRw->read_event == NULL) {
         printf("read_event error: %s, errno: %d", strerror(errno), errno);
         free(clientRw);
         return NULL;
     }
+    printf("read_event(clntfd = %d) create success\n", clntfd);
     clientRw->write_event = event_new(base, clntfd, EV_WRITE | EV_PERSIST, write_cb, clientRw);
     if(clientRw->write_event == NULL) {
         printf("write_event error: %s, errno: %d", strerror(errno), errno);
@@ -155,6 +157,7 @@ struct client_rw *client_rw_init(int clntfd, struct sockaddr_in c_addr, struct e
         free(clientRw);
         return NULL;
     }
+    printf("write_event(clntfd = %d) create success\n", clntfd);
 
     return clientRw;
 }
@@ -162,28 +165,28 @@ struct client_rw *client_rw_init(int clntfd, struct sockaddr_in c_addr, struct e
 void client_rw_free(std::map<int, struct client_rw>::iterator it) {
     printf("free client_rw start\n");
     if(it->first != -1) {
-        pthread_mutex_destroy(&it->second.recv_lock);
-        pthread_mutex_destroy(&it->second.send_lock);
-        printf("destroy lock success\n");
-//        memset(it->second.recv_buf, 0, SAVE_MAX);
-//        memset(it->second.send_buf, 0, SAVE_MAX);
-//        printf("set array zero success\n");
+        if(pthread_mutex_trylock(&it->second.recv_lock) != 0) {
+            pthread_mutex_unlock(&it->second.recv_lock);
+            pthread_mutex_destroy(&it->second.recv_lock);
+        }
+        if(pthread_mutex_trylock(&it->second.send_lock) != 0) {
+            pthread_mutex_unlock(&it->second.send_lock);
+            pthread_mutex_destroy(&it->second.send_lock);
+        }
+        
         if(it->second.read_event != NULL) {
             event_free(it->second.read_event);
-            printf("read_event free\n");
-//            clientRw->read_event = NULL;
+            printf("read_event(clntfd = %d) free\n", it->first);
         }
         if(it->second.write_event != NULL) {
             event_free(it->second.write_event);
-            printf("write_event free\n");
-//            clientRw->write_event = NULL;
+            printf("write_event(clntfd = %d) free\n", it->first);
         }
         close(it->first);
         g_clients.erase(it);
 //        free(clientRw);
-//        clientRw = NULL;
     }
-    printf("free client_rw OK\n");
+    printf("free client_rw(clntfd = %d) OK\n", it->first);
 }
 
 void client_rw_del(int clntfd) {
@@ -191,10 +194,10 @@ void client_rw_del(int clntfd) {
     auto it_client = g_clients.find(clntfd);
     if (it_client != g_clients.end()) {
         client_rw_free(it_client);
-        printf("delete client_rw OK\n");
+        printf("delete client_rw(clntfd = %d) OK\n", clntfd);
         return;
     } else {
-        printf("no such client which clntfd = %d", clntfd);
+        printf("no such client which clntfd = %d\n", clntfd);
         return ;
     }
 }
@@ -340,6 +343,7 @@ void accept_cb(int servfd, short event, void *arg) {
                 pthread_mutex_unlock(&handle_lock);
                 return ;
             }
+            printf("read_event(clntfd = %d) add OK\n", it->first);
             if(event_add(it->second.write_event, NULL) < 0) {
                 printf("write_event add error: %s, errno: %d", strerror(errno), errno);
 //                client_rw_free(clientRw);
@@ -348,6 +352,7 @@ void accept_cb(int servfd, short event, void *arg) {
                 pthread_mutex_unlock(&handle_lock);
                 return ;
             }
+            printf("write_event(clntfd = %d) add OK\n", it->first);
         } else {
             printf("no such client which clntfd = %d\n", clntfd);
             pthread_mutex_unlock(&handle_lock);
@@ -396,7 +401,7 @@ void read_cb(int clntfd, short event, void *arg) {
 //        }
 //        printf("\n");
     } else {
-        printf("no such client which clntfd = %d\n", clntfd);
+        printf("read_cb: no such client which clntfd = %d\n", clntfd);
         close(clntfd);
         return ;
     }
@@ -448,10 +453,9 @@ void write_cb(int clntfd, short event, void *arg) {
                 it_clients->second.send_num = 0;
                 pthread_mutex_unlock(&it_clients->second.send_lock);
             }
-            printf("send_num(after) = %lu\n", it_clients->second.send_num);
         }
     } else {
-        printf("no such client which clntfd = %d\n", clntfd);
+        printf("write_cb: no such client which clntfd = %d\n", clntfd);
         close(clntfd);
         return ;
     }
