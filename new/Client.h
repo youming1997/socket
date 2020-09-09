@@ -31,6 +31,7 @@ private:
     client_state state;
 
 public:
+    char username[30];
     char recv_buf[SAVE_MAX];
     char send_buf[SAVE_MAX];
     struct event *recv_event;

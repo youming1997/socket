@@ -97,31 +97,56 @@ void *handle_thread(void *arg) {
     while(g_flag) {
         pthread_mutex_lock(&handle_lock);
         for(it_client = g_clients.begin() ;it_client != g_clients.end(); ++it_client) {
-            int ret;
+            int ret, len;
+            char sendname[30];
 
+            memset(sendname, 0, 30);
             memset(data, 0, LINE_MAX);
-            ret = checkState(it_client->second, data);
+            ret = checkState(it_client->second, data, &len, sendname);
             if(ret == 0)
                 continue;
             else if(ret == 1) {
                 if(getType(it_client->second->send_buf) == WCT_PONG) {
                     it_client->second->lockSend();
-                    memcpy(it_sendclient->second->send_buf, data, strlen(data));
-                    it_client->second->setSendNum(strlen(data));
+                    memcpy(it_sendclient->second->send_buf, data, len);
+                    it_client->second->setSendNum(len);
                     it_client->second->unlockSend();
                 } else{
                     it_client->second->setState(CS_WEBSOCKET_CONNECTED);
                 }
                 continue;
             } else if(ret > 1) {
-                for(it_sendclient = g_clients.begin(); it_sendclient != g_clients.end(); ++it_sendclient) {
-                    if(it_sendclient->second->getState() == CS_WEBSOCKET_CONNECTED) {
-                        it_sendclient->second->lockSend();
-                        memcpy(it_sendclient->second->send_buf, data, ret);
-                        it_sendclient->second->setSendNum(ret);
-                        it_sendclient->second->unlockSend();
+                if(ret == 1001 || ret == 1002) {
+                    it_client->second->lockSend();
+                    memcpy(it_sendclient->second->send_buf, data, len);
+                    it_client->second->setSendNum(len);
+                    it_client->second->unlockSend();
+                } else if(ret == 1003) {
+                    for(it_sendclient = g_clients.begin(); it_sendclient != g_clients.end(); ++it_sendclient) {
+                        if(it_sendclient->second->getState() == CS_WEBSOCKET_CONNECTED) {
+                            it_sendclient->second->lockSend();
+                            memcpy(it_sendclient->second->send_buf, data, ret);
+                            it_sendclient->second->setSendNum(ret);
+                            it_sendclient->second->unlockSend();
+                        }
+                    }
+                } else if(ret == 1004) {
+                    for(it_sendclient = g_clients.begin(); it_sendclient != g_clients.end(); ++it_sendclient) {
+                        if(strncmp(it_sendclient->second->username, sendname, strlen(sendname)) == 0) {
+                            if(it_sendclient->second->getState() == CS_WEBSOCKET_CONNECTED) {
+                                it_sendclient->second->lockSend();
+                                memcpy(it_sendclient->second->send_buf, data, ret);
+                                it_sendclient->second->setSendNum(ret);
+                                it_sendclient->second->unlockSend();
+                                break;
+                            }
+                        }
+                    }
+                    if(it_sendclient == g_clients.end()) {
+                        printf("1004,没有名叫%s的人", it_sendclient->second->username);
                     }
                 }
+
                 continue;
             } else if(ret == -1){
                 memset(data, 0, LINE_MAX);

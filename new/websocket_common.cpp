@@ -4,7 +4,9 @@
 
 #include "websocket_common.h"
 
-int base64_encode( const char *indata, int in_len, char *outdata) {
+extern std::map<int, Client *> g_clients;
+
+int base64_encode(const char *indata, int in_len, char *outdata) {
     BIO *b64, *bio;
     BUF_MEM *bptr = NULL;
     size_t size = 0;
@@ -281,9 +283,10 @@ int enpackage(char data[], int dataLen, WebSocket_CommunicationType type, bool i
  *         1   成功
  *         len 发送包的长度
  */
-int checkState(Client *client, char data[]) {
-
+int checkState(Client *client, char data[], int *len, char sendname[]) {
     client_state state = client->getState();
+    *len = 0;
+
     if(state == CS_TCP_CONNECTED) {
         int ret;
         char requestKey[LINE_MAX];
@@ -293,17 +296,17 @@ int checkState(Client *client, char data[]) {
             memset(requestKey, 0, LINE_MAX);
             ret = getRequestKey(client, requestKey);
             if(ret == -1) {
-                printf("client (%s:%d) shake hand failed\n", inet_ntoa(client->getClientAddress().sin_addr), client->getClientAddress().sin_port);
+                printf("客户端 (username = %s) 握手失败\n", client->username);
                 return -1;
             } else if(ret == 0) {
-                printf("客户端 (%s:%d) 头长度不足\n", inet_ntoa(client->getClientAddress().sin_addr), client->getClientAddress().sin_port);
+                printf("客户端 (username = %s) 头长度不足\n", client->username);
                 return 0;
             } else {
                 printf("requestKey = %s\n", requestKey);
                 memset(responseHead, 0, LINE_MAX);
                 ret = getResponseHead(requestKey, responseHead);
                 if(-1 == ret) {
-                    printf("client (%s:%d) get response head error\n", inet_ntoa(client->getClientAddress().sin_addr), client->getClientAddress().sin_port);
+                    printf("客户端 (username = %s) 获取响应头失败\n", client->username);
                     return -1;
                 }
                 printf("responseHead\n%s", responseHead);
@@ -329,7 +332,7 @@ int checkState(Client *client, char data[]) {
                     payloadLen = getPayLoadLen(client);
                     client->unlockRecv();
                 } else {
-                    printf("客户端 (%s:%d) 数据不够长, 不足以获取判断掩码和数据长度的标记\n", inet_ntoa(client->getClientAddress().sin_addr), client->getClientAddress().sin_port);
+                    printf("客户端 (username = %s) 数据不够长, 不足以获取判断掩码和数据长度的标记\n", client->username);
                     return 0;
                 }
 
@@ -339,7 +342,7 @@ int checkState(Client *client, char data[]) {
                     client->unlockRecv();
                     packageLen = getPackageLen(ismask, payloadLen, dataLen);
                 } else {
-                    printf("客户端 (%s:%d) 数据不够长, 不足以获取数据长度\n", inet_ntoa(client->getClientAddress().sin_addr), client->getClientAddress().sin_port);
+                    printf("客户端 (username = %s) 数据不够长, 不足以获取数据长度\n", client->username);
                     return 0;
                 }
 
@@ -350,14 +353,71 @@ int checkState(Client *client, char data[]) {
                     memcpy(package, client->recv_buf, packageLen);
                     client->unlockRecv();
                     int ret = dePackage(package, ismask, payloadLen, dataLen, message);
-                    int len;
+                    int datalen;
                     if(ret == 1) {
 
                         char dataPackage[LINE_MAX];
+                        char comma_before[LINE_MAX], comma_after[LINE_MAX];
+                        Message_Type message_type;
+                        auto it = g_clients.begin();
                         memset(dataPackage, 0, LINE_MAX);
-                        printf("client(%s:%d) said: %s", inet_ntoa(client->getClientAddress().sin_addr), client->getClientAddress().sin_port, message);
-                        sprintf(dataPackage, "client(%s:%d) said: %s",
-                                inet_ntoa(client->getClientAddress().sin_addr), client->getClientAddress().sin_port, message);
+                        memset(comma_before, 0, LINE_MAX);
+                        memset(comma_after, 0, LINE_MAX);
+//                        printf("%s said: %s", client->username, message);
+                        //判断消息种类(消息例子：1001，朱宏宽)
+                        getComma(message, comma_before, comma_after);
+                        message_type = checkMessageState(comma_before);
+                        if(message_type == WS_LOGIN) {
+                            it = g_clients.begin();
+                            for(; it != g_clients.end(); ++it) {
+                                if(strncmp(it->second->username, comma_after, strlen(it->second->username)) == 0) {
+                                    break;
+                                }
+                            }
+                            if(it == g_clients.end()) {
+                                memcpy(client->username, comma_after, strlen(comma_after));
+                                sprintf(dataPackage, "昵称修改成功");
+                            } else
+                                sprintf(dataPackage, "该昵称已存在，请重新命名");
+                        } else if(message_type == WS_USERLIST) {
+                            char name[30];
+                            int i = 0;
+                            strncat(dataPackage, "1002", strlen("1002"));
+                            for(; it != g_clients.end(); ++it) {
+                                memset(name, 0, 30);
+                                if(it->second->getState() == CS_WEBSOCKET_CONNECTED) {
+                                    strncat(dataPackage, it->second->username, strlen(it->second->username));
+                                }
+                                ++i;
+                                if(i != g_clients.size()) {
+                                    strncat(dataPackage, ",", strlen(","));
+                                }
+                            }
+                        } else if(message_type == WS_BROADCAST) {
+                            sprintf(dataPackage, "1003,%s said: %s", client->username, comma_after);
+                        } else if(message_type == WS_PRIVATECHAT) {
+                            char sendmessage[LINE_MAX];
+
+                            getComma(comma_after, sendname, sendmessage);
+                            if(sendname != client->username){
+                                for(; it != g_clients.end(); ++it) {
+                                    if(strncmp(it->second->username, sendname, strlen(it->second->username)) == 0) {
+                                        if(it->second->getState() == CS_WEBSOCKET_CONNECTED) {
+                                            break;
+                                        }
+                                    }
+                                }
+                                if(it != g_clients.end()) {
+                                    sprintf(dataPackage, "1004,%s said to %s: %s", client->username, it->second->username, comma_after);
+                                } else {
+                                    sprintf(dataPackage, "1004,没有名叫%s的人", sendname);
+                                }
+                            } else {
+                                sprintf(dataPackage, "1004,不能向自己发送私聊");
+                            }
+                        } else {
+                            sprintf(dataPackage, "1005,消息发送有误");
+                        }
 
                         client->lockRecv();
                         char temp[LINE_MAX];
@@ -369,18 +429,24 @@ int checkState(Client *client, char data[]) {
 
                         memset(data, 0, LINE_MAX);
                         if(type != WCT_PING) {
-                            len = enpackage(dataPackage, strlen(dataPackage), type, false, data, LINE_MAX);
-                            if(len == -1) {
-                                printf("%d不够长\n", LINE_MAX);
+                            datalen = enpackage(dataPackage, strlen(dataPackage), type, false, data, LINE_MAX);
+                            if(datalen == -1) {
+                                printf("%d处理数据不够长\n", LINE_MAX);
                                 return -1;
                             }
-                            return len;
+                            *len = datalen;
+                            return message_type;
                         } else {
-                            len = enpackage(message, dataLen, WCT_PONG, true, data, LINE_MAX);
-                            client->lockSend();
-                            memcpy(client->send_buf, data, len);
-                            client->setSendNum(len);
-                            client->unlockSend();
+                            datalen = enpackage(message, dataLen, WCT_PONG, true, data, LINE_MAX);
+//                            client->lockSend();
+//                            memcpy(client->send_buf, data, datalen);
+//                            client->setSendNum(datalen);
+//                            client->unlockSend();
+                            if(datalen == -1) {
+                                printf("%d处理心跳包不够长\n", LINE_MAX);
+                                return -1;
+                            }
+                            *len = datalen;
                             return 1;
                         }
                     } else {
@@ -388,7 +454,7 @@ int checkState(Client *client, char data[]) {
                         return 0;
                     }
                 } else {
-                    printf("客户端 (%s:%d) 数据不够长, 不足以获取数据\n", inet_ntoa(client->getClientAddress().sin_addr), client->getClientAddress().sin_port);
+                    printf("客户端 (username = %s) 数据不够长, 不足以获取数据\n", client->username);
                     return 0;
                 }
             } else if(type == WCT_DISCONN) {
@@ -402,6 +468,22 @@ int checkState(Client *client, char data[]) {
     }
 
 //    return -1;
+}
+
+Message_Type checkMessageState(char before[]) {
+    int type = atoi(before);
+    switch (type) {
+        case 1001:
+            return WS_LOGIN;
+        case 1002:
+            return WS_USERLIST;
+        case 1003:
+            return WS_BROADCAST;
+        case 1004:
+            return WS_PRIVATECHAT;
+        default:
+            return WS_ERROR;
+    }
 }
 
 /**
@@ -424,10 +506,10 @@ int getRequestKey(Client *client, char requestKey[]) {
             return 0;
         }
 
-        for(i = 0; i + 3 < client->getRecvNum(); ++i) {
-            if(client->recv_buf[i] == '\r' && client->recv_buf[i + 1] == '\n' && client->recv_buf[i + 2] == '\r' && client->recv_buf[i + 3] == '\n')
-                headEnd = i + 3;
-        }
+//        for(i = 0; i + 3 < client->getRecvNum(); ++i) {
+//            if(client->recv_buf[i] == '\r' && client->recv_buf[i + 1] == '\n' && client->recv_buf[i + 2] == '\r' && client->recv_buf[i + 3] == '\n')
+//                headEnd = i + 3;
+//        }
 
         if((end = strstr(client->recv_buf, "\r\n\r\n")) != NULL) {
             memset(head, 0, LINE_MAX);
@@ -501,6 +583,15 @@ int getResponseHead(char requestKey[], char responseHead[]) {
                              "Sec-WebSocket-Accept: %s\r\n\r\n", responseKey);
 
     return 1;
+}
+
+void getComma(char message[], char before[], char after[]) {
+    char *comma_part;
+    if((comma_part = strstr(message, ",")) != NULL) {
+        memcpy(after, comma_part + 1, strlen(comma_part) - 1);
+        memcpy(before, message, strlen(message) - strlen(comma_part));
+    }
+    free(comma_part);
 }
 
 void delayms(int ms) {

@@ -6,6 +6,8 @@
 
 Client::Client(struct sockaddr_in client_addr) {
     this->c_addr = client_addr;
+    memset(this->username, 0, 30);
+    sprintf(username, "client(%s:%d)", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
     memset(this->recv_buf, 0, SAVE_MAX);
     memset(this->send_buf, 0, SAVE_MAX);
     this->recv_num = 0;

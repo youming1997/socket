@@ -8,6 +8,7 @@
 #include <cstring>
 #include <ctime>
 #include <cstdlib>
+#include <map>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
@@ -28,12 +29,30 @@ typedef enum {
     WCT_NULL = 0
 }WebSocket_CommunicationType;
 
+typedef enum {
+    WS_LOGIN = 1001,        // 登陆信息
+    WS_USERLIST = 1002,     // 用户列表
+    WS_BROADCAST = 1003,    // 群发消息
+    WS_PRIVATECHAT = 1004,  // 私聊消息
+    WS_ERROR = 1005         // 类型错误
+}Message_Type;
+
+struct package {
+    WebSocket_CommunicationType ws_type;
+    bool isMask;
+    int dataLen;
+    Message_Type m_type;
+    char data[LINE_MAX];
+};
+
 int readLine(char buf[], int level, char line[]);
 WebSocket_CommunicationType getType(char buffer[]);
 int enpackage(char data[], int dataLen, WebSocket_CommunicationType type, bool isMask, char package[], unsigned int packageMaxLen);
-int checkState(Client *client, char data[]);
+int checkState(Client *client, char data[], int *len, char sendname[]);
+Message_Type checkMessageState(char before[]);
 int getRequestKey(Client *client, char requestKey[]);
 int getResponseHead(char requestKey[], char responseHead[]);
+void getComma(char message[], char before[], char after[]);
 void delayms(int ms);
 
 #endif //WEBSOCKET_SERVER_PTHREAD_WEBSOCKET_COMMON_H
