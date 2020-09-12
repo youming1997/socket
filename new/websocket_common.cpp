@@ -279,7 +279,7 @@ int enpackage(char data[], int dataLen, WebSocket_CommunicationType type, bool i
 int checkName(char name[]) {
     auto it = g_clients.begin();
     for(; it != g_clients.end(); ++it) {
-        if(strncmp(it->second->username, name, strlen(name)))
+        if(strncmp(it->second->username, name, strlen(name)) == 0)
             return 0;
     }
     return 1;
@@ -336,10 +336,9 @@ int checkState(Client *client, char data[], int *len, char sendname[]) {
             switch(type) {
                 case WCT_TXTDATA:
                 case WCT_BINDATA:
-                case WCT_PING:
-                    break;
+                case WCT_PING:          
                 case WCT_PONG:
-                    return 0;
+                    break;
                 case WCT_DISCONN:
                 default:
                     return -1;
@@ -354,11 +353,10 @@ int checkState(Client *client, char data[], int *len, char sendname[]) {
         datalen = getDataLen(client, payload);
         if(datalen == 0)
             return 0;
-        else {
+        else if(type != WCT_PONG){
             packagelen = getPackageLen(ismask, payload, datalen);
             memset(message, 0, LINE_MAX);
             memset(package, 0, LINE_MAX);
-            memset(send, 0, LINE_MAX);
             if(client->getRecvNum() >= packagelen) {
                 client->lockRecv();
                 memcpy(package, client->recv_buf, packagelen);
@@ -366,11 +364,22 @@ int checkState(Client *client, char data[], int *len, char sendname[]) {
                 ret_depackage = dePackage(package, ismask, payload, datalen, message);
             }
         }
+        memset(send, 0, LINE_MAX);
+        char temp[LINE_MAX];
+        {
+            memset(temp, 0, LINE_MAX);
+            client->lockRecv();
+            memcpy(temp, client->recv_buf + packagelen, client->getRecvNum() - packagelen);
+            memcpy(client->recv_buf, temp, client->getRecvNum() - packagelen);
+            memset(client->recv_buf + (client->getRecvNum() - packagelen), 0, packagelen);
+            client->setRecvNum(client->getRecvNum() - packagelen);
+            client->unlockRecv();
+        }
         if(ret_depackage == 1) {
             memset(m_type, 0, LINE_MAX);
             memset(text, 0, LINE_MAX);
             if(type == WCT_PING) {
-                enpackage(message, strlen(message), WCT_PONG, true, data, LINE_MAX);
+                *len = enpackage(message, strlen(message), WCT_PONG, true, data, LINE_MAX);
                 return 1;
             }
             getComma(message, m_type, text);
@@ -379,12 +388,12 @@ int checkState(Client *client, char data[], int *len, char sendname[]) {
                 case 1001:
                     ret_name = checkName(text);
                     if(ret_name == 0) {
-                        strncpy(data, "2001,该用户名已存在", strlen("2001,该用户名已存在"));
+                        strcpy(send, "2001,该用户名已存在");
                     } else if(ret_name == 1) {
-                        strncpy(send, "2001,用户名修改成功", strlen("2001,用户名修改成功"));
-                        strncpy(client->username, text, strlen(text));
+                        strcpy(send, "2001,用户名修改成功");
+                        strcpy(client->username, text);
                     }
-                    enpackage(send, strlen(send), type, false, data, LINE_MAX);
+                    *len = enpackage(send, strlen(send), type, false, data, LINE_MAX);
                     break;
                 case 1002: {
                     auto it = g_clients.begin();
@@ -402,14 +411,22 @@ int checkState(Client *client, char data[], int *len, char sendname[]) {
                         i++;
                     }
                     sprintf(send, "2002,%d,%s", count, namelist);
-                    enpackage(send, strlen(send), type, false, data, LINE_MAX);
+                    *len = enpackage(send, strlen(send), type, false, data, LINE_MAX);
                     break;
                 }
                 case 1003:
-                    enpackage(text, strlen(text), type, false, data, LINE_MAX);
+                    strncpy(send, "2003,", strlen("2003,"));
+                    strncat(send, text, strlen(text));
+                    *len = enpackage(send, strlen(send), type, false, data, LINE_MAX);
                     break;
                 case 1004:
-                    enpackage(text, strlen(text), type, false, data, LINE_MAX);
+                    char temp[LINE_MAX];
+                    memset(temp, 0, LINE_MAX);
+                    getComma(text, sendname, temp);
+                    strncpy(send, "2004,", strlen("2004,"));
+                    strncat(send, temp, strlen(temp));
+                    *len = enpackage(send, strlen(send), type, false, data, LINE_MAX);
+                    
                     break;
                 default:
                     return -1;
@@ -421,8 +438,7 @@ int checkState(Client *client, char data[], int *len, char sendname[]) {
         else if(state == CS_CLOSE) {
         return -1;
     }
-
-//    return -1;
+    return -1;
 }
 
 //Message_Type checkMessageState(char before[]) {
