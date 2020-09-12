@@ -117,16 +117,22 @@ void *handle_thread(void *arg) {
                 continue;
             } else if(ret > 1) {
                 if(ret == 1001 || ret == 1002) {
+                    printf("len = %d", len);
+                    printf("data = ");
+                    for(int i = 0; i < strlen(data); ++i) {
+                        printf("%.2x ", data[i]);
+                    }
+                    printf("\n");
                     it_client->second->lockSend();
-                    memcpy(it_sendclient->second->send_buf, data, len);
+                    memcpy(it_client->second->send_buf, data, len);
                     it_client->second->setSendNum(len);
                     it_client->second->unlockSend();
                 } else if(ret == 1003) {
                     for(it_sendclient = g_clients.begin(); it_sendclient != g_clients.end(); ++it_sendclient) {
                         if(it_sendclient->second->getState() == CS_WEBSOCKET_CONNECTED) {
                             it_sendclient->second->lockSend();
-                            memcpy(it_sendclient->second->send_buf, data, ret);
-                            it_sendclient->second->setSendNum(ret);
+                            memcpy(it_sendclient->second->send_buf, data, len);
+                            it_sendclient->second->setSendNum(len);
                             it_sendclient->second->unlockSend();
                         }
                     }
@@ -135,15 +141,15 @@ void *handle_thread(void *arg) {
                         if(strncmp(it_sendclient->second->username, sendname, strlen(sendname)) == 0) {
                             if(it_sendclient->second->getState() == CS_WEBSOCKET_CONNECTED) {
                                 it_sendclient->second->lockSend();
-                                memcpy(it_sendclient->second->send_buf, data, ret);
-                                it_sendclient->second->setSendNum(ret);
+                                memcpy(it_sendclient->second->send_buf, data, len);
+                                it_sendclient->second->setSendNum(len);
                                 it_sendclient->second->unlockSend();
                                 break;
                             }
                         }
                     }
                     if(it_sendclient == g_clients.end()) {
-                        printf("1004,没有名叫%s的人", it_sendclient->second->username);
+                        printf("2005,没有名叫%s的人", it_sendclient->second->username);
                     }
                 }
 
@@ -270,6 +276,12 @@ void read_cb(int clntfd, short event, void *arg) {
         it->second->lockRecv();
         memcpy(it->second->recv_buf + it->second->getRecvNum(), recv_buffer, ret);
         it->second->setRecvNum(it->second->getRecvNum() + ret);
+        printf("it->second->getRecvNum() = %lu\n", it->second->getRecvNum());
+        printf("it->second->recv_buf = ");
+        for(int i = 0; i < it->second->getRecvNum(); ++i) {
+            printf("%.2x ", it->second->recv_buf[i]);
+        }
+        printf("\n");
         it->second->unlockRecv();
     }
 }
