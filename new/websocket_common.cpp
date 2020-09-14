@@ -398,7 +398,7 @@ int checkState(Client *client, char data[], int *len, char sendname[]) {
                 case 1002: {
                     auto it = g_clients.begin();
                     char namelist[LINE_MAX];
-                    int count = 0, i = 0;
+                    int count = 0, i = 1;
                     memset(namelist, 0, LINE_MAX);
                     for (; it != g_clients.end(); ++it) {
                         if (it->second->getState() == CS_WEBSOCKET_CONNECTED) {
@@ -415,19 +415,34 @@ int checkState(Client *client, char data[], int *len, char sendname[]) {
                     break;
                 }
                 case 1003:
-                    strncpy(send, "2003,", strlen("2003,"));
+//                    strncpy(send, "2003,", strlen("2003,"));
+                    sprintf(send, "2003,%s 说: ", client->username);
                     strncat(send, text, strlen(text));
                     *len = enpackage(send, strlen(send), type, false, data, LINE_MAX);
                     break;
-                case 1004:
+                case 1004: {
                     char temp[LINE_MAX];
+                    auto it = g_clients.begin();
+
                     memset(temp, 0, LINE_MAX);
                     getComma(text, sendname, temp);
-                    strncpy(send, "2004,", strlen("2004,"));
-                    strncat(send, temp, strlen(temp));
+                    for (; it != g_clients.end(); ++it) {
+                          if (it->second->getState() == CS_WEBSOCKET_CONNECTED && strncmp(it->second->username, sendname, strlen(sendname)) != 0 && strncmp(sendname, client->username, strlen(sendname)) != 0) {
+                            memset(send, 0, LINE_MAX);
+//                            strncpy(send, "2004,", strlen("2004,"));
+                            sprintf(send, "2004,%s 对你说: ", client->username);
+                            strncat(send, temp, strlen(temp));
+                            printf("send = %s\n", send);
+                            break;
+                        }
+                    }
+                    if(it == g_clients.end()) {
+                        memset(send, 0, LINE_MAX);
+                        strncpy(send, "2004,没有该用户或该用户为自身", strlen("2004,没有该用户或该用户为自身"));
+                    }
                     *len = enpackage(send, strlen(send), type, false, data, LINE_MAX);
-                    
                     break;
+                }
                 default:
                     return -1;
             }
