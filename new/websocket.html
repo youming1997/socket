@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <title>Websocket测试</title>
+    <script type="text/javascript" src="js/jquery-3.3.1.min.js"></script>
     <script>
-        var url = "ws://192.168.0.112:8000";
+        var url = "ws://127.0.0.1:8000";
         var ws = null;
         //加入聊天室
         function joinRoom() {
@@ -73,15 +74,22 @@
                 alert("你已掉线，请重新加入");
                 return;
             }
-            ws.send("1004," + document.getElementById("sendMsg").value);
+            var select = document.getElementById("userlist");
+            for(i = 0; i < select.options.length; ++i) {
+                if(select.options[i].selected) {
+                    ws.send("1004," + select.options[i].value + "," + document.getElementById("sendMsg").value);
+                }
+            }
             document.getElementById("sendMsg").value = "";
         }
 
         function closeWebSocket() {
-            if(ws){
-                ws.close();
-                ws = null;
+            if (!ws) {
+                alert("客户端未连接");
+                return;
             }
+            ws.close;
+            ws = null;
         }
 
         function talking(content) {
@@ -95,17 +103,28 @@
             if(front === "2001" && back === "用户名修改成功") {
                 document.getElementById("user").value = document.getElementById("username").value;
             } else if(front === "2002") {
-                back = data.substring(index + 1, data.length);
-                back = getUserComma(back);
+                back = getComma(back);
+            } else if(parseInt(front) !== 2003 && parseInt(front) !== 2004 && parseInt(front) !== 2005 && back !== "该用户名已存在"){
+                refresh(front, back);
             }
             return back;
         }
 
-        function getUserComma(data) {
-            var index = data.indexOf(",");
-            var front = data.substring(0, index);
-            var back = data.substring(index + 1);
-            return back;
+        function refresh(number, data) {
+            var select = document.getElementById("userlist");
+            select.options.length = 0;
+            console.log(parseInt(number));
+            for(i = 0; i < parseInt(number); ++i) {
+                var index = data.indexOf(",");
+                if(index === -1) {
+                    var user = data.substring(0);
+                } else {
+                    var user = data.substring(0, index);
+                }
+                data = data.substring(index + 1);
+                select.options[i] = new Option(user, user);
+            }
+//            select.options.length = i;
         }
     </script>
 </head>
@@ -125,6 +144,9 @@
     <br/>
     <button type="button" onclick="getUserList()">显示用户列表</button>
     <button type="button" onclick="privateChat()">私聊</button>
+    <select id="userlist">
+        <option>当前无用户</option>
+    </select>
 </div>
 </body>
 </html>
