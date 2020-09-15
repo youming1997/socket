@@ -141,7 +141,7 @@ void *handle_thread(void *arg) {
                         if(strncmp(it_sendclient->second->username, sendname, strlen(sendname)) == 0) {
                             if(it_sendclient->second->getState() == CS_WEBSOCKET_CONNECTED) {
 //                                if(it_sendclient->second->username == it_client->second->username) {
-//                                    char error_string[] = "不能向自己发送私聊消息";
+//                                    char error_string[] = "2005,不能向自己发送私聊消息";
 //                                    enpackage(error_string, strlen(error_string), WCT_TXTDATA, false, data, LINE_MAX);
 //                                }
                                 it_sendclient->second->lockSend();
@@ -153,7 +153,7 @@ void *handle_thread(void *arg) {
                         }
                     }
                     if(it_sendclient == g_clients.end()) {
-                        printf("2005,没有名叫%s的人", it_sendclient->second->username);
+                        printf("2005,没有名叫%s的人", sendname);
                     }
                 }
 
