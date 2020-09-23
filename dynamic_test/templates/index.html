@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>欢迎</title>
+</head>
+<body>
+    <h1>不起眼的图书系统</h1>
+    <table>
+        <tr>
+            <td><a href="/addbook">添加书籍</a></td>
+            <td><a href="/addpublish">添加出版社</a></td>
+            <td><a href="/addauthor">添加作者</a></td>
+            <td><a href="/addbookauthor">为书籍添加作者</a></td>
+        </tr>
+    </table>
+    <table>
+        <tr>
+            <td><a href="/searchall">查看书籍</a></td>
+{#            <td><a href="/addpublish">添加出版社</a></td>#}
+{#            <td><a href="/addauthor">添加作者</a></td>#}
+{#            <td><a href="/addbookauthor">为书籍添加作者</a></td>#}
+        </tr>
+    </table>
+    {{ msg | safe }}
+</body>
+</html>

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+{% load static %}
+<head>
+    <meta charset="UTF-8">
+    <title>书籍信息</title>
+    <script type="text/javascript" src="{% static "js/jquery-3.4.1.min.js" %}"></script>
+    <script>
+        $(function () {
+            $.ajax({
+                type: "GET",
+                url: "http://127.0.0.1:8000/searchallbook",
+                dataType: "json",
+                success: function (result) {
+                    console.log(result);
+                    handle(result);
+
+                    function handle(result) {
+                        var i = result.length;
+                        var j = 0;
+                        $.each(result, function (index, obj) {
+                            $('#json').append(
+                                "<tr>" +
+                                "<td>" + obj['id'] + "</td>" +
+                                "<td>" + obj['title'] + "</td>" +
+                                "<td>" + obj['price'] + "</td>" +
+                                "<td>" + obj['publish'] + "</td>" +
+                                "<td>" + obj['pub_date'] + "</td>" +
+                                "<td>" + obj['author'] + "</td>" +
+                                "<td>" +
+                                "<a href='/deletebook?id=" + obj['id'] + "'>删除</a> " +
+                                "<a href='/updatebook?id=" + obj['id'] + "'>修改</a>" +
+                                "</tr>"
+                            )
+                            j += 1;
+                            if (j > i)
+                                return;
+                        })
+                    }
+                },
+                error: function (e) {
+                    console.log("Ajax请求错误")
+                }
+            })
+        })
+    </script>
+    <script>
+        function changeinput() {
+            var sel = document.getElementById("method");
+            var index = sel.selectedIndex;
+            var value = sel.options[index].value;
+            var input = document.getElementById("text");
+            if(value === "searchbookbyId" || value === "searchbookbyPrice") {
+                input.type="number";
+            }
+            if(value === "searchbookbyTitle" || value === "searchbookbyPublish") {
+                input.type="text";
+            }
+            if(value === "searchbookbyPubdate") {
+                input.type="date";
+            }
+        }
+
+        function fresh() {
+            var sel = document.getElementById("method");
+            var index = sel.selectedIndex;
+            var value = sel.options[index].value;
+            let url = "http://127.0.0.1:8000/" + value + "?message=" + document.getElementById("text").value;
+            console.log(url);
+            sendRequest(url);
+        }
+
+        var XMLHttpReq = false;
+
+        function createXMLHttpRequest() {
+	        if(window.XMLHttpRequest) {
+	            XMLHttpReq = new XMLHttpRequest();
+	        }
+	        else if (window.ActiveXObject) {
+                try {
+                    XMLHttpReq = new ActiveXObject("Msxml2.XMLHTTP");
+                } catch (e) {
+                    try {
+                        XMLHttpReq = new ActiveXObject("Microsoft.XMLHTTP");
+                    } catch (e) {}
+                }
+            }
+	    }
+
+        function sendRequest(url) {
+            createXMLHttpRequest();
+            XMLHttpReq.open("GET", url, true);
+            XMLHttpReq.onreadystatechange = processResponse;
+            XMLHttpReq.send(null);
+        }
+        
+        function processResponse() {
+            if (XMLHttpReq.readyState == 4) { // 判断对象状态
+	            if (XMLHttpReq.status == 200) { // 信息已经成功返回，开始处理信息
+	                var result = XMLHttpReq.responseText;
+	                var res = JSON.parse(result)
+                    var i = res.length;
+                    var j = 0;
+                    $('#json').html("");
+                    $('#json').append(
+                        "<tr>" +
+                        "<td>编号</td>" +
+                        "<td>书名</td>" +
+                        "<td>价格</td>" +
+                        "<td>出版社</td>" +
+                        "<td>出版日期</td>" +
+                        "<td>作者</td>" +
+                        "<td>操作</td>" +
+                        "</tr>");
+                    $.each(res, function (index, obj) {
+                        $('#json').append(
+                            "<tr>" +
+                            "<td>" + obj['id'] + "</td>" +
+                            "<td>" + obj['title'] + "</td>" +
+                            "<td>" + obj['price'] + "</td>" +
+                            "<td>" + obj['publish'] + "</td>" +
+                            "<td>" + obj['pub_date'] + "</td>" +
+                            "<td>" + obj['author'] + "</td>" +
+                            "<td>" +
+                            "<a href='/deletebook?id=" + obj['id'] + "'>删除</a> " +
+                            "<a href='/updatebook?id=" + obj['id'] + "'>修改</a>" +
+                            "</tr>");
+                        j += 1;
+                        if (j > i)
+                            return;
+                    })
+	            } else { //页面不正常
+	            window.alert("您所请求的页面有异常。");
+	            }
+	        }
+        }
+    </script>
+</head>
+<body>
+    搜索:
+    <select id="method" onchange="changeinput()">
+        <option name="id" value="searchbookbyId">编号</option>
+        <option name="title" value="searchbookbyTitle">书名</option>
+        <option name="price" value="searchbookbyPrice">价格</option>
+        <option name="publish" value="searchbookbyPublish">出版社</option>
+        <option name="pubdate" value="searchbookbyPubdate">出版时间</option>
+    </select>
+    <input type="number" id="text"/>
+    <input type="button" name="submit" id="submit" value="搜索" onclick="fresh()"/>
+    <br/>
+    <br/>
+    <table id="json" border="1">
+        <tr>
+            <td>编号</td>
+            <td>书名</td>
+            <td>价格</td>
+            <td>出版社</td>
+            <td>出版日期</td>
+            <td>作者</td>
+            <td>操作</td>
+        </tr>
+    </table>
+<a href="/index">返回</a>
+</body>
+</html>

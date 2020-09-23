@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+{% load static %}
+<head>
+    <meta charset="UTF-8">
+    <title>为书籍添加作者</title>
+    <script type="text/javascript" src="{% static "js/jquery-3.4.1.min.js" %}"></script>
+    <script>
+        $(function () {
+            $.ajax({
+                type: "GET",
+                url: "http://127.0.0.1:8000/searchallbook",
+                dataType: "json",
+                success: function (result) {
+                    handle(result);
+
+                    function handle(result) {
+                        let i = result.length;
+                        let j = 0;
+                        $.each(result, function (index, obj) {
+                            $('#book').append(
+                                "<option value='" + obj['id'] + "'>" + obj['title'] + "</option>"
+                            )
+                            j += 1;
+                            if(j > i)
+                                return;
+                        })
+                    }
+                }
+            })
+        })
+        console.log($('#book').option);
+    </script>
+    <script>
+        $(function () {
+            $.ajax({
+                type: "GET",
+                url: "http://127.0.0.1:8000/searchallauthor",
+                dataType: "json",
+                success: function (result) {
+                    handle(result);
+
+                    function handle(result) {
+                        let i = result.length;
+                        let j = 0;
+                        $.each(result, function (index, obj) {
+                            $('#author').append(
+                                "<input type='checkbox' name='author_id' value='" + obj['id'] + "'" + "/>" + obj['name'] + "<br/>"
+                            )
+                            j += 1;
+                            if(j > i)
+                                return;
+                        })
+                    }
+                }
+            })
+        })
+    </script>
+    <script>
+        {#action="/addbookauthormessage" method="get"#}
+        function add() {
+            var sel = document.getElementById("book");
+            var index = sel.selectedIndex;
+            var value = sel.options[index].value;
+            const obj = document.getElementsByName("author_id");
+            checkList = [];
+            for(i in obj){
+                if(obj[i].checked)
+                    checkList.push(obj[i].value);
+            }
+            let url = "http://127.0.0.1:8000/addbookauthormessage?book_id=" + value + "&author_id=" + checkList.toString();
+            sendRequest(url);
+        }
+
+        var XMLHttpReq = false;
+
+        function createXMLHttpRequest() {
+	        if(window.XMLHttpRequest) {
+	            XMLHttpReq = new XMLHttpRequest();
+	        }
+	        else if (window.ActiveXObject) {
+                try {
+                    XMLHttpReq = new ActiveXObject("Msxml2.XMLHTTP");
+                } catch (e) {
+                    try {
+                        XMLHttpReq = new ActiveXObject("Microsoft.XMLHTTP");
+                    } catch (e) {}
+                }
+            }
+	    }
+
+        function sendRequest(url) {
+            createXMLHttpRequest();
+            XMLHttpReq.open("GET", url);
+            XMLHttpReq.onreadystatechange = processResponse;
+            XMLHttpReq.send(null);
+        }
+
+        function processResponse() {
+            if (XMLHttpReq.readyState == 4) { // 判断对象状态
+	            if (XMLHttpReq.status == 200) { // 信息已经成功返回，开始处理信息
+	                alert(XMLHttpReq.responseText);
+	            } else { //页面不正常
+	            window.alert("您所请求的页面有异常。");
+	            }
+	        }
+        }
+    </script>
+</head>
+<body>
+    <form>
+        <table>
+            <tr>
+                <td>
+                    <select id="book" name="book_id"></select>
+                </td>
+                <td>
+                    <button type="button" id="submit" onclick="add()"><-添加</button>
+                </td>
+                <td id="author"></td>
+            </tr>
+        </table>
+        <a href="/index">返回</a>
+    </form>
+</body>
+</html>
