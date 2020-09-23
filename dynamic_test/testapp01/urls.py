@@ -41,4 +41,8 @@ urlpatterns = [
     url('searchbookbyPrice/', book.search_book_by_price),
     url('searchbookbyPublish/', book.search_book_by_publish),
     url('searchbookbyPubdate/', book.search_book_by_pubdate),
+
+    url('deletebook/', book.delete_book),
+    url('updatebook/', views.update_book),
+    url('updatebookmessage/', book.update_book),
 ]

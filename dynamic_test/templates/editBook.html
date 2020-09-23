@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+{% load static %}
+<head>
+    <meta charset="UTF-8">
+    <title>修改书籍</title>
+    <script type="text/javascript" src="{% static "js/jquery-3.4.1.min.js" %}"></script>
+    <script>
+        $(function () {
+            $.ajax({
+                type: "GET",
+                url: "http://127.0.0.1:8000/searchallpublish/",
+                dataType: "json",
+                success: function (result) {
+                    handle(result);
+
+                    function handle(result) {
+                        let i = result.length;
+                        let j = 0;
+                        $.each(result, function (index, obj) {
+                           $('#publish').append(
+                                "<option value='" + obj['id'] + "'>" + obj['name'] + "</option>"
+                            )
+                            j += 1;
+                            if(j > i)
+                                return;
+                        })
+                    }
+                }
+            })
+        })
+    </script>
+</head>
+<body>
+<form action="/updatebookmessage" method="get">
+    <input type="hidden" name="id" value="{{ id }}"/>
+    <table>
+        <tr>
+            <td>书籍名称:</td>
+            <td><input type="text" name="title"/></td>
+        </tr>
+        <tr>
+            <td>书籍价格:</td>
+            <td><input type="number" name="price"/></td>
+        </tr>
+        <tr>
+            <td>出版社:</td>
+            <td>
+                <select id="publish" name="publish">
+                    <option value="0">无</option>
+                </select>
+            </td>
+        </tr>
+        <tr>
+            <td>出版时间:</td>
+            <td><input type="date" name="pubdate"/></td>
+        </tr>
+        <tr>
+            <td><input type="submit" value="提交"></td>
+            <td><input type="reset" value="重置"></td>
+        </tr>
+    </table>
+    {{ msg | safe }}
+</form>
+</body>
+</html>

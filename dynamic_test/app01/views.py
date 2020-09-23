@@ -34,3 +34,7 @@ def add_book_author(request):
 
 def search_all_book(request):
     return render(request, 'searchAll.html')
+
+
+def update_book(request):
+    return render(request, 'editBook.html', {"id": request.GET['id']})

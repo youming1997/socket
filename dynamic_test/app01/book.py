@@ -3,7 +3,7 @@ from __future__ import unicode_literals
 
 import json
 
-from django.shortcuts import render, HttpResponse
+from django.shortcuts import render, HttpResponse, redirect
 from django.db.models import Q, F
 from app01 import models
 import sys
@@ -32,12 +32,15 @@ def add_book_author_message(request):
         book = models.Book.objects.get(id=request.GET['book_id'])
         authors = request.GET['author_id']
         print authors
+        authorlist = ""
         for i in authors:
-            print i
+            authorlist += "["
             if i.isdigit():
-                author = models.Author.objects.get(id=i)
-                author.book_set.add(book)
+                # author = models.Author.objects.get(id=i)
+                # author.book_set.add(book)
+                authorlist += str(i) + ","
         # book.authors.add(author)
+        book.authors.add(*authorlist)
         return HttpResponse("添加书籍作者成功")
 
     return render(request, 'addBookAuthor.html', {"msg": "<p>添加书籍作者失败</p>"})
@@ -135,3 +138,26 @@ def getlist(booklist, listlen):
 
     print response
     return response
+
+
+def delete_book(request):
+    book = models.Book.objects.get(id=request.GET['id'])
+    authorList = book.authors.all()
+    j = 1
+    for author in authorList:
+        authorinfo = models.Author.objects.get(id=author.id)
+        authorinfo.book_set.remove(book)
+    book.delete()
+
+    return redirect("/searchall")
+
+
+def update_book(request):
+    book = models.Book.objects.get(id=request.GET['id'])
+    book.title = request.GET['title']
+    book.price = request.GET['price']
+    book.pub_date = request.GET['pubdate']
+    book.publish_id = request.GET['publish']
+    book.save()
+
+    return redirect("/searchall")
